@@ -1,0 +1,372 @@
+using System;
+using System.Windows;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Events;
+using Serilog.Extensions.Logging;
+using Serilog.Sinks.Debug;
+using TCServer.Core.Services;
+using TCServer.Data.Repositories;
+using TCServer.Common.Interfaces;
+using System.Diagnostics;
+using System.Threading;
+using MySql.Data.MySqlClient;
+using System.Threading.Tasks;
+using System.Security.Authentication;
+
+namespace TCServer;
+
+public partial class App : Application
+{
+    private IHost? _host;
+    private ILogger<App>? _logger;
+    private static Mutex? _mutex;
+
+    public IHost Host => _host ?? throw new InvalidOperationException("Host未初始化");
+
+    public App()
+    {
+        try
+        {
+            // 检查是否已经有实例在运行
+            _mutex = new Mutex(true, "TCServer.SingleInstance", out bool createdNew);
+            if (!createdNew)
+            {
+                MessageBox.Show("应用程序已经在运行中。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                Shutdown(1);
+                return;
+            }
+
+            // 配置日志
+            var logger = new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+                .MinimumLevel.Override("System", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService", LogEventLevel.Warning)
+                .WriteTo.File("logs/app.log", 
+                    rollingInterval: RollingInterval.Day,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception:j}")
+                .WriteTo.File("logs/errors.log", 
+                    restrictedToMinimumLevel: LogEventLevel.Error, 
+                    rollingInterval: RollingInterval.Day)
+                .WriteTo.Debug()
+                .Enrich.FromLogContext()
+                .CreateLogger();
+
+            // 创建Host
+            var builder = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder();
+            _logger?.LogInformation("Host.Builder创建完成");
+
+            builder.ConfigureServices((context, services) =>
+            {
+                try
+                {
+                    // 配置日志
+                    services.AddLogging(builder =>
+                    {
+                        builder.AddSerilog(logger);
+                        builder.AddDebug();
+                    });
+
+                    // 注册基础服务
+                    services.AddSingleton<ISystemConfigRepository, SystemConfigRepository>();
+                    services.AddSingleton<IDailyRankingRepository, DailyRankingRepository>();
+                    
+                    // 注册BinanceApiService为单例
+                    services.AddSingleton<BinanceApiService>(sp =>
+                    {
+                        var logger = sp.GetRequiredService<ILogger<BinanceApiService>>();
+                        return new BinanceApiService(logger);
+                    });
+                    
+                    // 注册其他服务
+                    services.AddSingleton<IKlineRepository, KlineRepository>();
+                    services.AddSingleton<KlineService>();
+                    services.AddSingleton<RankingService>();
+                    services.AddTransient<MainWindow>();
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, "服务注册失败");
+                    throw;
+                }
+            });
+
+            _logger?.LogInformation("开始构建Host...");
+            _host = builder.Build();
+            _logger = _host.Services.GetRequiredService<ILogger<App>>();
+            
+            // 设置全局ServiceProvider
+            ServiceProviderAccessor.ServiceProvider = _host.Services;
+            
+            _logger.LogInformation("Host构建完成");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"应用程序初始化失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            throw;
+        }
+    }
+
+    protected override async void OnStartup(StartupEventArgs e)
+    {
+        try
+        {
+            if (_host == null)
+            {
+                throw new InvalidOperationException("Host未初始化");
+            }
+
+            _logger?.LogInformation("正在启动应用程序...");
+            
+            try
+            {
+                _logger?.LogInformation("开始启动Host...");
+                
+                // 在启动Host前检查数据库连接
+                await CheckInitialDatabaseState();
+                
+                await _host.StartAsync();
+                _logger?.LogInformation("Host启动完成");
+                
+                // 启动数据库连接池监控
+                StartDbConnectionPoolMonitoring();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Host启动失败");
+                throw;
+            }
+            
+            try
+            {
+                // 手动创建并显示主窗口
+                var mainWindow = _host.Services.GetRequiredService<MainWindow>();
+                _logger?.LogInformation("主窗口创建完成");
+                
+                mainWindow.Show();
+                _logger?.LogInformation("主窗口显示完成");
+                
+                // 主窗口显示后再次检查数据库状态
+                await CheckInitialDatabaseState();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "主窗口创建/显示失败");
+                throw;
+            }
+            
+            base.OnStartup(e);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "启动应用程序时发生错误");
+            MessageBox.Show($"启动应用程序时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+        }
+    }
+
+    // 检查初始数据库状态
+    private async Task CheckInitialDatabaseState()
+    {
+        try
+        {
+            var connectionString = TCServer.Data.Repositories.DatabaseHelper.GetOptimizedConnectionString();
+            using var connection = new MySql.Data.MySqlClient.MySqlConnection(connectionString);
+            
+            await connection.OpenAsync();
+            
+            // 使用COALESCE替代IFNULL，并添加默认值
+            var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT 
+                    COALESCE(COUNT(*), 0) as total_connections,
+                    COALESCE(SUM(CASE WHEN command = 'Sleep' THEN 1 ELSE 0 END), 0) as sleeping_connections,
+                    COALESCE(SUM(CASE WHEN command != 'Sleep' THEN 1 ELSE 0 END), 0) as active_connections,
+                    COALESCE(
+                        GROUP_CONCAT(
+                            CONCAT(
+                                'ID:', id, 
+                                ',User:', user,
+                                ',Host:', host,
+                                ',Command:', command,
+                                ',Time:', time,
+                                ',State:', state,
+                                ',Info:', COALESCE(info, '')
+                            )
+                            SEPARATOR '|'
+                        ),
+                        ''
+                    ) as connection_details
+                FROM information_schema.processlist
+                WHERE user = CURRENT_USER()";
+            
+            using var reader = await command.ExecuteReaderAsync();
+            if (await reader.ReadAsync())
+            {
+                // 使用GetValue和Convert来安全地获取值
+                var totalConnections = Convert.ToInt32(reader.GetValue(0));
+                var sleepingConnections = Convert.ToInt32(reader.GetValue(1));
+                var activeConnections = Convert.ToInt32(reader.GetValue(2));
+                var connectionDetails = Convert.ToString(reader.GetValue(3)) ?? "";
+                
+                _logger?.LogInformation(
+                    "数据库初始状态检查:\n" +
+                    $"1. 当前用户连接统计:\n" +
+                    $"   - 总连接数: {totalConnections}\n" +
+                    $"   - 休眠连接: {sleepingConnections}\n" +
+                    $"   - 活动连接: {activeConnections}\n" +
+                    "2. 连接详情:\n" +
+                    (string.IsNullOrEmpty(connectionDetails) ? 
+                        "   当前没有活跃连接" : 
+                        string.Join("\n", connectionDetails.Split('|').Select(x => "   " + x))));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "检查数据库初始状态时出错: {Message}", ex.Message);
+        }
+    }
+
+    // 数据库连接池监控
+    private System.Threading.Timer? _dbMonitorTimer;
+    private void StartDbConnectionPoolMonitoring()
+    {
+        // 每30秒检查一次数据库连接池状态
+        _dbMonitorTimer = new System.Threading.Timer(CheckDbConnectionPool, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30));
+        _logger?.LogInformation("数据库连接池监控已启动");
+    }
+
+    private void CheckDbConnectionPool(object? state)
+    {
+        try
+        {
+            var connectionString = TCServer.Data.Repositories.DatabaseHelper.GetOptimizedConnectionString();
+            using var connection = new MySql.Data.MySqlClient.MySqlConnection(connectionString);
+            
+            var timeoutTask = Task.Delay(10000);
+            var connectionTask = connection.OpenAsync();
+            
+            if (Task.WhenAny(connectionTask, timeoutTask).Result == timeoutTask)
+            {
+                _logger?.LogWarning("数据库连接池状态检查超时");
+                return;
+            }
+            
+            if (connectionTask.IsFaulted)
+            {
+                _logger?.LogWarning(connectionTask.Exception, "数据库连接池状态检查失败");
+                return;
+            }
+            
+            // 使用COALESCE替代IFNULL，并添加默认值
+            var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT 
+                    COALESCE(COUNT(*), 0) as total_connections,
+                    COALESCE(SUM(CASE WHEN command = 'Sleep' THEN 1 ELSE 0 END), 0) as sleeping_connections,
+                    COALESCE(SUM(CASE WHEN command != 'Sleep' THEN 1 ELSE 0 END), 0) as active_connections,
+                    COALESCE(MAX(time), 0) as max_connection_time,
+                    COALESCE(
+                        GROUP_CONCAT(
+                            CONCAT(
+                                'ID:', id, 
+                                ',User:', user,
+                                ',Host:', host,
+                                ',Command:', command,
+                                ',Time:', time,
+                                ',State:', state,
+                                ',Info:', COALESCE(info, '')
+                            )
+                            SEPARATOR '|'
+                        ),
+                        ''
+                    ) as connection_details
+                FROM information_schema.processlist
+                WHERE user = CURRENT_USER()";
+            
+            using var reader = command.ExecuteReader();
+            if (reader.Read())
+            {
+                // 使用GetValue和Convert来安全地获取值
+                var totalConnections = Convert.ToInt32(reader.GetValue(0));
+                var sleepingConnections = Convert.ToInt32(reader.GetValue(1));
+                var activeConnections = Convert.ToInt32(reader.GetValue(2));
+                var maxConnectionTime = Convert.ToInt32(reader.GetValue(3));
+                var connectionDetails = Convert.ToString(reader.GetValue(4)) ?? "";
+                
+                // 获取更详细的连接池统计信息
+                var stats = TCServer.Data.Repositories.DatabaseHelper.GetConnectionStats();
+                
+                _logger?.LogInformation(
+                    "数据库连接池状态报告:\n" +
+                    "1. MySQL服务器连接统计 (当前用户):\n" +
+                    $"   - 总连接数: {totalConnections}\n" +
+                    $"   - 休眠连接: {sleepingConnections} (空闲连接)\n" +
+                    $"   - 活动连接: {activeConnections} (正在执行命令)\n" +
+                    $"   - 最长连接时间: {maxConnectionTime}秒\n" +
+                    "2. 应用程序操作统计:\n" +
+                    $"   - 当前并行操作数: {stats.activeConnections} (最多允许10个)\n" +
+                    $"   - 可用操作槽数: {stats.availableSemaphoreCount}\n" +
+                    $"   - 历史最大并行数: {stats.maxConcurrentConnections}\n" +
+                    "3. 当前活跃操作列表:\n" +
+                    string.Join("\n", stats.activeConnectionDetails.Select(x => "   " + x)) + "\n" +
+                    "4. MySQL连接详情:\n" +
+                    (string.IsNullOrEmpty(connectionDetails) ? 
+                        "   当前没有活跃连接" : 
+                        string.Join("\n", connectionDetails.Split('|').Select(x => "   " + x))));
+                
+                // 如果连接数异常，记录警告
+                if (totalConnections > 20 || stats.activeConnections > 10 || maxConnectionTime > 300)
+                {
+                    _logger?.LogWarning(
+                        "检测到异常连接状态:\n" +
+                        $"1. MySQL连接数: {totalConnections} (超过20)\n" +
+                        $"2. 应用操作数: {stats.activeConnections} (超过10)\n" +
+                        $"3. 最长连接时间: {maxConnectionTime}秒 (超过300秒)\n" +
+                        "请检查是否有连接泄漏或长时间运行的操作");
+                }
+            }
+        }
+        catch (AuthenticationException ex) when (ex.Message.Contains("frame size") || ex.Message.Contains("corrupted frame"))
+        {
+            _logger?.LogWarning("数据库SSL连接错误，将在下次检查中重试: {Message}", ex.Message);
+        }
+        catch (MySql.Data.MySqlClient.MySqlException ex)
+        {
+            _logger?.LogWarning("数据库连接池状态检查MySQL错误: {ErrorCode} - {Message}", ex.Number, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "检查数据库连接池状态失败: {Message}", ex.Message);
+        }
+    }
+
+    protected override async void OnExit(ExitEventArgs e)
+    {
+        try
+        {
+            // 停止数据库连接池监控
+            _dbMonitorTimer?.Dispose();
+            
+            if (_host != null)
+            {
+                _logger?.LogInformation("正在关闭应用程序...");
+                await _host.StopAsync();
+                _logger?.LogInformation("应用程序关闭完成");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "关闭应用程序时发生错误");
+        }
+        finally
+        {
+            _mutex?.ReleaseMutex();
+            _mutex?.Dispose();
+            base.OnExit(e);
+        }
+    }
+} 

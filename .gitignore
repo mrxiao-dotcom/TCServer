@@ -1,0 +1,60 @@
+# Visual Studio 临时文件
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# 构建结果
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# 项目特定文件
+*.nupkg
+*.snupkg
+*.pdb
+*.cache
+*.dll
+*.exe
+*.pdb
+*.log
+*.tlog
+*.lastbuildstate
+*.vspscc
+*.vssscc
+*.pidb
+*.svclog
+*.scc
+
+# 数据库文件
+*.mdf
+*.ldf
+*.ndf
+
+# 配置文件（根据需要取消注释）
+# appsettings.Development.json
+# appsettings.Production.json
+# appsettings.Staging.json
+
+# 其他
+*.swp
+*.*~
+project.lock.json
+.DS_Store
+Thumbs.db 
