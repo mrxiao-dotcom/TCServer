@@ -36,7 +36,7 @@ namespace TCServer.Core.Services
         
         public RankingService(
             IKlineRepository klineRepository, 
-            IDailyRankingRepository rankingRepository,
+            IDailyRankingRepository rankingRepository, 
             BinanceApiService binanceApiService,
             ILogger<RankingService> logger)
         {
@@ -130,14 +130,14 @@ namespace TCServer.Core.Services
                 // 使用 Task.Run 来确保异步操作在后台线程执行
                 await Task.Run(() =>
                 {
-                    lock (_realtimeLock)
-                    {
-                        _isRealtimeUpdateEnabled = true;
-                        _realtimeUpdateTimer?.Start();
-                    }
+            lock (_realtimeLock)
+            {
+                _isRealtimeUpdateEnabled = true;
+                _realtimeUpdateTimer?.Start();
+            }
                 });
-                
-                Log("实时排名更新已启动", LogLevel.Information);
+            
+            Log("实时排名更新已启动", LogLevel.Information);
                 // 立即执行一次更新
                 await UpdateRealtimeRankingAsync();
             }
@@ -167,67 +167,32 @@ namespace TCServer.Core.Services
         
         private async Task UpdateRealtimeRankingAsync()
         {
-            if (!_isRealtimeUpdateEnabled)
-                return;
+            if (!_isRealtimeUpdateEnabled) return;
 
-            const int maxRetries = 3;
+            int maxRetries = 3;
             int currentRetry = 0;
             
             while (currentRetry < maxRetries)
             {
                 try
                 {
-                    var now = DateTime.Now;
-                    var today = now.Date;
+                    var today = DateTime.Now.Date;
                     
-                    // 获取所有交易对
-                    var symbols = await _binanceApiService.GetPerpetualSymbolsAsync();
-                    if (symbols == null || !symbols.Any())
+                    // 获取所有交易对的24小时行情数据
+                    var tickers = await _binanceApiService.Get24hrTickerAsync();
+                    if (tickers == null || !tickers.Any())
                     {
-                        Log("获取交易对信息为空，等待下次更新", LogLevel.Warning);
+                        Log("未获取到有效的行情数据", LogLevel.Warning);
                         return;
                     }
-
-                    var rankings = new List<(string Symbol, decimal Percentage)>();
                     
-                    // 获取每个交易对的K线数据
-                    foreach (var symbol in symbols)
+                    // 转换为排名数据
+                    var rankings = tickers.Select(t => new
                     {
-                        try
-                        {
-                            // 获取最新的一条K线数据
-                            var klines = await _binanceApiService.GetKlinesAsync(
-                                symbol,
-                                "1d",
-                                DateTime.Now.AddDays(-1),
-                                DateTime.Now);
-                                
-                            if (klines.Count > 0)
-                            {
-                                var latestKline = klines[0];
-                                var previousKline = klines.Count > 1 ? klines[1] : null;
-                                
-                                if (previousKline != null)
-                                {
-                                    var percentage = (latestKline.Close - previousKline.Open) / previousKline.Open * 100;
-                                    rankings.Add((symbol, percentage));
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Log($"获取 {symbol} 数据时出错: {ex.Message}", LogLevel.Warning);
-                        }
-                        
-                        // 添加延迟以避免请求过于频繁
-                        await Task.Delay(100);
-                    }
-
-                    if (!rankings.Any())
-                    {
-                        Log("没有有效的排名数据，等待下次更新", LogLevel.Warning);
-                        return;
-                    }
+                        Symbol = t.Symbol.Replace("USDT", ""), // 去掉USDT后缀
+                        Percentage = t.PriceChangePercent / 100m, // 转换为小数
+                        Volume = t.QuoteVolume
+                    }).ToList();
 
                     // 获取涨幅前N和跌幅前N
                     var topGainers = rankings
@@ -237,7 +202,7 @@ namespace TCServer.Core.Services
                         {
                             Rank = index + 1,
                             Symbol = r.Symbol,
-                            Percentage = r.Percentage / 100m  // 转换为小数
+                            Percentage = r.Percentage
                         })
                         .ToList();
 
@@ -248,14 +213,11 @@ namespace TCServer.Core.Services
                         {
                             Rank = index + 1,
                             Symbol = r.Symbol,
-                            Percentage = r.Percentage / 100m  // 转换为小数
+                            Percentage = r.Percentage
                         })
                         .ToList();
 
-                    // 保存排名数据并等待完成
-                    await SaveRankingDataAsync(today, topGainers, topLosers);
-                    
-                    // 触发排名更新事件
+                    // 只触发排名更新事件，不保存到数据库
                     OnRankingUpdated(new RankingUpdateEventArgs
                     {
                         Date = today,

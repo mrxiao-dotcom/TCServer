@@ -36,6 +36,7 @@ namespace TCServer
         private DateTime _lastUpdateTime;
         private DateTime _nextUpdateTime;
         private bool _isRealtimeRunning;
+        private bool _isBreakthroughRunning;  // 新增：突破推送运行状态
         
         // 突破提醒相关字段
         private BreakthroughSettings _breakthroughSettings;
@@ -47,14 +48,28 @@ namespace TCServer
         private readonly List<BreakthroughEvent> _pendingDowntrends = new List<BreakthroughEvent>();
         private readonly List<BreakthroughEvent> _pendingHighBreaks = new List<BreakthroughEvent>();
         private readonly List<BreakthroughEvent> _pendingLowBreaks = new List<BreakthroughEvent>();
-        private Timer _notificationTimer;
         private readonly object _pendingEventsLock = new object();
-        private const int NOTIFICATION_INTERVAL_MS = 60000; // 每分钟汇总发送一次
+        private Timer? _notificationTimer;
+        private const int NOTIFICATION_INTERVAL_MS = 300000; // 5分钟 = 300000毫秒
 
         // 添加新高/新低数据缓存
         private readonly Dictionary<string, Dictionary<int, (decimal High, decimal Low)>> _highLowCache = new();
         private readonly object _highLowCacheLock = new object();
         private bool _isHighLowCacheInitialized = false;
+
+        // 推送信息数据模型
+        public class PushMessage
+        {
+            public string Timestamp { get; set; } = string.Empty;
+            public string Symbol { get; set; } = string.Empty;
+            public string Percentage { get; set; } = string.Empty;
+            public string LastPrice { get; set; } = string.Empty;
+            public string OpenPrice { get; set; } = string.Empty;
+        }
+
+        // 推送信息集合
+        private readonly ObservableCollection<PushMessage> _pushBuffer = new();
+        private readonly ObservableCollection<PushMessage> _pushSent = new();
 
         public RankingWindow()
         {
@@ -101,14 +116,78 @@ namespace TCServer
             // 默认选择今天日期
             datePicker.SelectedDate = DateTime.Now.Date;
             
-            // 初始化新高/新低数据缓存
-            InitializeHighLowCacheAsync();
+            // 注释掉自动初始化缓存
+            // InitializeHighLowCacheAsync();
         }
         
         // 处理排名服务日志事件
         private void RankingService_LogUpdated(object? sender, RankingLogEventArgs e)
         {
             Dispatcher.Invoke(() => AppendLog(e.ToString()));
+        }
+
+        // 处理排名更新事件
+        private void RankingService_RankingUpdated(object? sender, RankingUpdateEventArgs e)
+        {
+            if (!_isBreakthroughRunning || e == null) return;
+
+            try
+            {
+                // 处理突破事件
+                if (e.TopGainers != null)
+                {
+                    foreach (var gainer in e.TopGainers)
+                    {
+                        var symbol = gainer.Symbol;
+                        var percentage = gainer.Percentage;
+                        
+                        // 从实时排名数据中查找对应的价格信息
+                        var realtimeData = _realtimeTopGainers.FirstOrDefault(r => r.Symbol == symbol) ??
+                                         _realtimeTopLosers.FirstOrDefault(r => r.Symbol == symbol);
+                        
+                        if (realtimeData != null)
+                        {
+                            // 检查是否满足突破条件
+                            if (_breakthroughSettings.Threshold1Enabled && Math.Abs(percentage) >= _breakthroughSettings.Threshold1 ||
+                                _breakthroughSettings.Threshold2Enabled && Math.Abs(percentage) >= _breakthroughSettings.Threshold2 ||
+                                _breakthroughSettings.Threshold3Enabled && Math.Abs(percentage) >= _breakthroughSettings.Threshold3)
+                            {
+                                // 添加到突破事件缓存
+                                var breakthroughEvent = new BreakthroughEvent
+                                {
+                                    Symbol = symbol,
+                                    Percentage = percentage * 100,
+                                    IsUptrend = percentage > 0,
+                                    ThresholdValue = Math.Abs(percentage) * 100,
+                                    Volume = realtimeData.QuoteVolume,
+                                    Timestamp = DateTime.Now
+                                };
+                                
+                                lock (_pendingEventsLock)
+                                {
+                                    if (percentage > 0)
+                                        _pendingUptrends.Add(breakthroughEvent);
+                                    else
+                                        _pendingDowntrends.Add(breakthroughEvent);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (e.TopLosers != null)
+                {
+                    // 跌幅突破事件已经在TopGainers中处理，这里不需要重复处理
+                }
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.Invoke(() => AppendLog($"处理排名更新事件时出错: {ex.Message}"));
+                if (ex.InnerException != null)
+                {
+                    Dispatcher.Invoke(() => AppendLog($"内部异常: {ex.InnerException.Message}"));
+                }
+            }
         }
 
         private async Task StartRealtimeRankingAsync()
@@ -121,6 +200,7 @@ namespace TCServer
 
             try
             {
+                AppendLog("正在启动实时排名服务...");
                 _isRealtimeRunning = true;
                 _realtimeCts = new CancellationTokenSource();
                 
@@ -128,86 +208,136 @@ namespace TCServer
                 _realtimeTopGainers.Clear();
                 _realtimeTopLosers.Clear();
                 
-                AppendLog("开始实时排名计算...");
-                
                 // 启动定时更新任务
-                _ = Task.Run(async () =>
+                var updateTask = Task.Run(async () =>
                 {
-                    while (!_realtimeCts.Token.IsCancellationRequested)
+                    AppendLog("实时排名更新任务已启动");
+                    int consecutiveErrors = 0;
+                    const int MAX_CONSECUTIVE_ERRORS = 3;
+
+                    try
                     {
-                        try
+                        while (!_realtimeCts.Token.IsCancellationRequested)
                         {
-                            // 获取所有交易对的最新K线数据
-                            var symbols = await _binanceApiService.GetPerpetualSymbolsAsync();
-                            var rankings = new List<RealtimeRankingViewModel>();
-                            
-                            foreach (var symbol in symbols)
+                            try
                             {
-                                try
+                                AppendLog("正在获取最新行情数据...");
+                                // 获取所有交易对的24小时行情数据
+                                var tickers = await _binanceApiService.Get24hrTickerAsync();
+                                if (tickers == null || !tickers.Any())
                                 {
-                                    // 获取最新的一条K线数据
-                                    var klines = await _binanceApiService.GetKlinesAsync(
-                                        symbol,
-                                        "1d",
-                                        DateTime.Now.AddDays(-1),
-                                        DateTime.Now);
-                                        
-                                    if (klines.Count > 0)
+                                    AppendLog("警告：获取行情数据为空，等待下次更新");
+                                    consecutiveErrors++;
+                                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
                                     {
-                                        var latestKline = klines[0];
-                                        var previousKline = klines.Count > 1 ? klines[1] : null;
-                                        
-                                        if (previousKline != null)
+                                        throw new Exception($"连续{MAX_CONSECUTIVE_ERRORS}次获取数据失败");
+                                    }
+                                    await Task.Delay(5000, _realtimeCts.Token);
+                                    continue;
+                                }
+
+                                consecutiveErrors = 0; // 重置错误计数
+                                AppendLog($"成功获取 {tickers.Count} 个交易对的行情数据");
+
+                                var rankings = new List<RealtimeRankingViewModel>();
+                                
+                                foreach (var ticker in tickers)
+                                {
+                                    try
+                                    {
+                                        rankings.Add(new RealtimeRankingViewModel
                                         {
-                                            var percentage = (latestKline.Close - previousKline.Open) / previousKline.Open * 100;
-                                            
-                                            rankings.Add(new RealtimeRankingViewModel
-                                            {
-                                                Symbol = symbol,
-                                                LastPrice = latestKline.Close,
-                                                OpenPrice = previousKline.Open,
-                                                Percentage = percentage / 100, // 转换为小数
-                                                QuoteVolume = latestKline.QuoteVolume
-                                            });
-                                        }
+                                            Symbol = ticker.Symbol.Replace("USDT", ""), // 去掉USDT后缀
+                                            LastPrice = ticker.LastPrice,
+                                            OpenPrice = ticker.OpenPrice,
+                                            Percentage = ticker.PriceChangePercent / 100, // 转换为小数
+                                            QuoteVolume = ticker.QuoteVolume
+                                        });
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        AppendLog($"处理 {ticker.Symbol} 数据时出错: {ex.Message}");
                                     }
                                 }
-                                catch (Exception ex)
+
+                                if (rankings.Any())
                                 {
-                                    AppendLog($"获取 {symbol} 数据时出错: {ex.Message}");
+                                    // 更新UI
+                                    await Dispatcher.InvokeAsync(() =>
+                                    {
+                                        try
+                                        {
+                                            UpdateRealtimeRankings(rankings);
+                                            _lastUpdateTime = DateTime.Now;
+                                            _nextUpdateTime = _lastUpdateTime.AddSeconds(5);
+                                            UpdateStatusTexts();
+                                            txtRealtimeStatus.Text = "实时排名状态：运行中";
+                                            AppendLog($"已更新实时排名数据，下次更新：{_nextUpdateTime:HH:mm:ss}");
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            AppendLog($"更新UI时出错: {ex.Message}");
+                                        }
+                                    });
                                 }
                                 
-                                // 添加延迟以避免请求过于频繁
-                                await Task.Delay(100, _realtimeCts.Token);
+                                // 等待到下一次更新
+                                await Task.Delay(5000, _realtimeCts.Token);
                             }
-                            
-                            // 更新UI
-                            Dispatcher.Invoke(() =>
+                            catch (OperationCanceledException)
                             {
-                                UpdateRealtimeRankings(rankings);
-                                _lastUpdateTime = DateTime.Now;
-                                _nextUpdateTime = _lastUpdateTime.AddSeconds(5);
-                                UpdateStatusTexts();
-                            });
-                            
-                            // 等待到下一次更新
-                            await Task.Delay(5000, _realtimeCts.Token);
-                        }
-                        catch (OperationCanceledException)
-                        {
-                            break;
-                        }
-                        catch (Exception ex)
-                        {
-                            AppendLog($"实时排名更新出错: {ex.Message}");
-                            await Task.Delay(5000, _realtimeCts.Token);
+                                AppendLog("实时排名更新任务被取消");
+                                break;
+                            }
+                            catch (Exception ex)
+                            {
+                                AppendLog($"实时排名更新出错: {ex.Message}");
+                                if (ex.InnerException != null)
+                                {
+                                    AppendLog($"内部异常: {ex.InnerException.Message}");
+                                }
+                                consecutiveErrors++;
+                                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS)
+                                {
+                                    throw new Exception($"连续{MAX_CONSECUTIVE_ERRORS}次更新失败，停止服务");
+                                }
+                                // 出错后等待一段时间再重试
+                                await Task.Delay(5000, _realtimeCts.Token);
+                            }
                         }
                     }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"实时排名任务发生严重错误: {ex.Message}");
+                        if (ex.InnerException != null)
+                        {
+                            AppendLog($"内部异常: {ex.InnerException.Message}");
+                        }
+                        // 发生严重错误时，重置状态
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            _isRealtimeRunning = false;
+                            btnStartRealtime.IsEnabled = true;
+                            btnStopRealtime.IsEnabled = false;
+                            txtRealtimeStatus.Text = "实时排名状态：已停止";
+                            AppendLog("实时排名服务已停止");
+                        });
+                    }
                 }, _realtimeCts.Token);
+
+                // 等待任务启动
+                await Task.Delay(100);
+                
+                // 检查任务是否还在运行
+                if (updateTask.IsFaulted)
+                {
+                    var exception = updateTask.Exception?.InnerException ?? updateTask.Exception;
+                    throw new Exception($"实时排名任务启动失败: {exception?.Message}");
+                }
                 
                 btnStartRealtime.IsEnabled = false;
                 btnStopRealtime.IsEnabled = true;
-                AppendLog("实时排名已启动");
+                AppendLog("实时排名服务已成功启动");
             }
             catch (Exception ex)
             {
@@ -217,6 +347,11 @@ namespace TCServer
                 {
                     AppendLog($"内部异常: {ex.InnerException.Message}");
                 }
+                
+                // 恢复按钮状态
+                btnStartRealtime.IsEnabled = true;
+                btnStopRealtime.IsEnabled = false;
+                txtRealtimeStatus.Text = "实时排名状态：启动失败";
             }
         }
 
@@ -230,6 +365,7 @@ namespace TCServer
                 
                 if (rankings == null || !rankings.Any())
                 {
+                    AppendLog("警告：没有可用的排名数据");
                     return;
                 }
                 
@@ -260,10 +396,14 @@ namespace TCServer
             catch (Exception ex)
             {
                 AppendLog($"更新实时排名时出错: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    AppendLog($"内部异常: {ex.InnerException.Message}");
+                }
             }
         }
 
-        private async void LoadHistoryRankingsAsync()
+        private async Task LoadHistoryRankingsAsync()
         {
             try
             {
@@ -434,12 +574,52 @@ namespace TCServer
                 btnStartRealtime.IsEnabled = false;
                 btnStopRealtime.IsEnabled = true;
                 
+                // 在启动实时排名之前初始化缓存
+                if (!_isHighLowCacheInitialized)
+                {
+                    AppendLog("正在初始化新高/新低数据缓存...");
+                    try 
+                    {
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(35)); // 35秒总超时
+                        await Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await InitializeHighLowCacheAsync();
+                                if (!_isHighLowCacheInitialized)
+                                {
+                                    throw new Exception("缓存初始化失败");
+                                }
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                throw new Exception("初始化过程超时");
+                            }
+                        }, cts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"初始化缓存失败: {ex.Message}");
+                        if (ex.InnerException != null)
+                        {
+                            AppendLog($"内部异常: {ex.InnerException.Message}");
+                        }
+                        // 恢复按钮状态
+                        btnStartRealtime.IsEnabled = true;
+                        btnStopRealtime.IsEnabled = false;
+                        return;
+                    }
+                }
+                else
+                {
+                    AppendLog("新高/新低数据缓存已初始化，跳过初始化步骤");
+                }
+                
                 // 启动实时排名
                 await StartRealtimeRankingAsync();
             }
             catch (Exception ex)
             {
-                // 处理StartRealtimeRankingAsync中的异常
                 AppendLog($"启动实时排名失败: {ex.Message}");
                 if (ex.InnerException != null)
                 {
@@ -456,8 +636,11 @@ namespace TCServer
         {
             try
             {
+                // 禁用所有相关按钮，防止重复点击
                 btnStartRealtime.IsEnabled = false;
                 btnStopRealtime.IsEnabled = false;
+                btnStartBreakthrough.IsEnabled = false;
+                btnStopBreakthrough.IsEnabled = false;
                 
                 // 停止实时排名
                 await StopRealtimeRankingAsync();
@@ -472,8 +655,11 @@ namespace TCServer
             }
             finally
             {
+                // 确保按钮状态正确
                 btnStartRealtime.IsEnabled = true;
                 btnStopRealtime.IsEnabled = false;
+                btnStartBreakthrough.IsEnabled = true;
+                btnStopBreakthrough.IsEnabled = false;
             }
         }
 
@@ -486,17 +672,75 @@ namespace TCServer
 
             try
             {
+                AppendLog("正在停止实时排名...");
+                
+                // 先停止突破推送
+                if (_isBreakthroughRunning)
+                {
+                    try
+                    {
+                        AppendLog("正在停止突破推送...");
+                        _isBreakthroughRunning = false;
+                        if (_rankingService != null)
+                        {
+                            _rankingService.RankingUpdated -= RankingService_RankingUpdated;
+                        }
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            btnStartBreakthrough.IsEnabled = true;
+                            btnStopBreakthrough.IsEnabled = false;
+                        });
+                        AppendLog("突破推送已停止");
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"停止突破推送时出错: {ex.Message}");
+                    }
+                }
+
+                // 停止实时排名
                 _isRealtimeRunning = false;
-                _realtimeCts?.Cancel();
                 
-                // 清空实时排名数据
-                _realtimeTopGainers.Clear();
-                _realtimeTopLosers.Clear();
-                
-                // 更新UI状态
-                btnStartRealtime.IsEnabled = true;
-                btnStopRealtime.IsEnabled = false;
-                txtStatus.Text = "实时排名已停止";
+                // 取消实时更新任务
+                if (_realtimeCts != null)
+                {
+                    try
+                    {
+                        _realtimeCts.Cancel();
+                        await Task.Delay(1000); // 给任务一些时间来清理
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"取消实时更新任务时出错: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _realtimeCts.Dispose();
+                        _realtimeCts = null;
+                    }
+                }
+
+                // 清空实时排名数据并更新UI
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        _realtimeTopGainers.Clear();
+                        _realtimeTopLosers.Clear();
+                        
+                        // 更新UI状态
+                        btnStartRealtime.IsEnabled = true;
+                        btnStopRealtime.IsEnabled = false;
+                        txtStatus.Text = "就绪";
+                        txtRealtimeStatus.Text = "实时排名状态：已停止";
+                        txtLastUpdateTime.Text = "最后更新时间：--";
+                        txtNextUpdateTime.Text = "下次更新时间：--";
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendLog($"更新UI状态时出错: {ex.Message}");
+                    }
+                });
                 
                 AppendLog("实时排名已停止");
             }
@@ -506,6 +750,21 @@ namespace TCServer
                 if (ex.InnerException != null)
                 {
                     AppendLog($"内部异常: {ex.InnerException.Message}");
+                }
+                
+                // 确保UI状态正确
+                try
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        btnStartRealtime.IsEnabled = true;
+                        btnStopRealtime.IsEnabled = false;
+                        txtRealtimeStatus.Text = "实时排名状态：停止出错";
+                    });
+                }
+                catch (Exception uiEx)
+                {
+                    AppendLog($"更新UI状态时出错: {uiEx.Message}");
                 }
             }
         }
@@ -538,7 +797,7 @@ namespace TCServer
                 {
                     AppendLog("成功：历史排名数据计算完成");
                     // 重新加载历史排名数据展示
-                    LoadHistoryRankingsAsync();
+                    await LoadHistoryRankingsAsync();
                 }
                 else
                 {
@@ -577,6 +836,7 @@ namespace TCServer
                 if (_rankingService != null)
                 {
                     _rankingService.LogUpdated -= RankingService_LogUpdated;
+                    _rankingService.RankingUpdated -= RankingService_RankingUpdated;
                 }
                 
                 // 异步停止实时排名
@@ -870,32 +1130,47 @@ namespace TCServer
             }
         }
         
-        // 定时发送所有待发送的通知
-        private void SendPendingNotifications(object state)
+        // 修改发送待处理通知的方法
+        private void SendPendingNotifications(object? state)
         {
             List<BreakthroughEvent> uptrends, downtrends, highBreaks, lowBreaks;
             
             lock (_pendingEventsLock)
             {
+                // 获取当前缓存的所有事件
                 uptrends = new List<BreakthroughEvent>(_pendingUptrends);
                 downtrends = new List<BreakthroughEvent>(_pendingDowntrends);
                 highBreaks = new List<BreakthroughEvent>(_pendingHighBreaks);
                 lowBreaks = new List<BreakthroughEvent>(_pendingLowBreaks);
                 
+                // 清空缓存
                 _pendingUptrends.Clear();
                 _pendingDowntrends.Clear();
                 _pendingHighBreaks.Clear();
                 _pendingLowBreaks.Clear();
             }
             
+            // 如果没有待发送的通知，直接返回
             if (uptrends.Count == 0 && downtrends.Count == 0 && highBreaks.Count == 0 && lowBreaks.Count == 0)
                 return;
                 
-            // 去重处理
-            uptrends = uptrends.GroupBy(e => e.Symbol).Select(g => g.OrderByDescending(e => e.Percentage).First()).OrderByDescending(e => e.Percentage).ToList();
-            downtrends = downtrends.GroupBy(e => e.Symbol).Select(g => g.OrderByDescending(e => e.Percentage).First()).OrderByDescending(e => e.Percentage).ToList();
-            highBreaks = highBreaks.GroupBy(e => e.Symbol).Select(g => g.OrderByDescending(e => e.Percentage).First()).OrderByDescending(e => e.Percentage).ToList();
-            lowBreaks = lowBreaks.GroupBy(e => e.Symbol).Select(g => g.OrderByDescending(e => e.Percentage).First()).OrderByDescending(e => e.Percentage).ToList();
+            // 去重处理：对于每个交易对，只保留涨幅/跌幅最大的事件
+            uptrends = uptrends.GroupBy(e => e.Symbol)
+                             .Select(g => g.OrderByDescending(e => e.Percentage).First())
+                             .OrderByDescending(e => e.Percentage)
+                             .ToList();
+            downtrends = downtrends.GroupBy(e => e.Symbol)
+                                 .Select(g => g.OrderByDescending(e => e.Percentage).First())
+                                 .OrderByDescending(e => e.Percentage)
+                                 .ToList();
+            highBreaks = highBreaks.GroupBy(e => e.Symbol)
+                                 .Select(g => g.OrderByDescending(e => e.Percentage).First())
+                                 .OrderByDescending(e => e.Percentage)
+                                 .ToList();
+            lowBreaks = lowBreaks.GroupBy(e => e.Symbol)
+                               .Select(g => g.OrderByDescending(e => e.Percentage).First())
+                               .OrderByDescending(e => e.Percentage)
+                               .ToList();
 
             // 分别发送不同类型的提醒
             Task.Run(async () =>
@@ -905,69 +1180,72 @@ namespace TCServer
                     // 发送涨跌幅突破提醒
                     if (uptrends.Count > 0 || downtrends.Count > 0)
                     {
-                        var title = "突破当日涨幅百分比提醒";
-            var messageBuilder = new StringBuilder();
-            
-            if (uptrends.Count > 0)
-            {
-                messageBuilder.AppendLine("多头突破");
-                for (int i = 0; i < uptrends.Count; i++)
-                {
-                    var evt = uptrends[i];
-                    messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
-                }
-            }
-            
-            if (downtrends.Count > 0)
-            {
+                        var title = "突破当日涨跌幅提醒";
+                        var messageBuilder = new StringBuilder();
+                        
+                        if (uptrends.Count > 0)
+                        {
+                            messageBuilder.AppendLine("多头突破");
+                            for (int i = 0; i < uptrends.Count; i++)
+                            {
+                                var evt = uptrends[i];
+                                messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            }
+                        }
+                        
+                        if (downtrends.Count > 0)
+                        {
                             if (uptrends.Count > 0) messageBuilder.AppendLine();
-                messageBuilder.AppendLine("空头突破");
-                for (int i = 0; i < downtrends.Count; i++)
-                {
-                    var evt = downtrends[i];
-                    messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
-                }
-            }
-            
+                            messageBuilder.AppendLine("空头突破");
+                            for (int i = 0; i < downtrends.Count; i++)
+                            {
+                                var evt = downtrends[i];
+                                messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            }
+                        }
+                        
                         await SendBreakthroughAlert(title, messageBuilder.ToString());
                         Dispatcher.Invoke(() => AppendLog($"已发送涨跌幅突破提醒：{uptrends.Count}个多头突破，{downtrends.Count}个空头突破"));
                     }
 
-                    // 发送新高突破提醒
-                    if (highBreaks.Count > 0)
+                    // 发送新高/新低突破提醒
+                    if (highBreaks.Count > 0 || lowBreaks.Count > 0)
                     {
-                        var title = "突破N日提醒";
+                        var title = "突破N日高低点提醒";
                         var messageBuilder = new StringBuilder();
-                        messageBuilder.AppendLine("新高突破");
-                        for (int i = 0; i < highBreaks.Count; i++)
+                        
+                        if (highBreaks.Count > 0)
                         {
-                            var evt = highBreaks[i];
-                            messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Days}日新高-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            messageBuilder.AppendLine("新高突破");
+                            for (int i = 0; i < highBreaks.Count; i++)
+                            {
+                                var evt = highBreaks[i];
+                                messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Days}日新高-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            }
                         }
-
-                        await SendBreakthroughAlert(title, messageBuilder.ToString());
-                        Dispatcher.Invoke(() => AppendLog($"已发送新高突破提醒：{highBreaks.Count}个新高突破"));
-                    }
-
-                    // 发送新低突破提醒
-                    if (lowBreaks.Count > 0)
-                    {
-                        var title = "突破N日提醒";
-                        var messageBuilder = new StringBuilder();
-                        messageBuilder.AppendLine("新低突破");
-                        for (int i = 0; i < lowBreaks.Count; i++)
+                        
+                        if (lowBreaks.Count > 0)
                         {
-                            var evt = lowBreaks[i];
-                            messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Days}日新低-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            if (highBreaks.Count > 0) messageBuilder.AppendLine();
+                            messageBuilder.AppendLine("新低突破");
+                            for (int i = 0; i < lowBreaks.Count; i++)
+                            {
+                                var evt = lowBreaks[i];
+                                messageBuilder.AppendLine($"{i + 1}、{evt.Symbol}-{evt.Days}日新低-{evt.Percentage:F2}%-{FormatVolume(evt.Volume)}");
+                            }
                         }
-
+                        
                         await SendBreakthroughAlert(title, messageBuilder.ToString());
-                        Dispatcher.Invoke(() => AppendLog($"已发送新低突破提醒：{lowBreaks.Count}个新低突破"));
+                        Dispatcher.Invoke(() => AppendLog($"已发送高低点突破提醒：{highBreaks.Count}个新高突破，{lowBreaks.Count}个新低突破"));
                     }
                 }
                 catch (Exception ex)
                 {
                     Dispatcher.Invoke(() => AppendLog($"发送汇总突破提醒时出错: {ex.Message}"));
+                    if (ex.InnerException != null)
+                    {
+                        Dispatcher.Invoke(() => AppendLog($"内部异常: {ex.InnerException.Message}"));
+                    }
                 }
             });
         }
@@ -1017,92 +1295,96 @@ namespace TCServer
             }
         }
 
-        private async void InitializeHighLowCacheAsync()
+        private async Task InitializeHighLowCacheAsync()
         {
+            if (_isHighLowCacheInitialized)
+            {
+                AppendLog("新高/新低数据缓存已经初始化，跳过初始化步骤");
+                return;
+            }
+
             try
             {
-                if (_binanceApiService == null || _rankingService == null) return;
-
-                AppendLog("正在初始化新高/新低数据缓存...");
-                
-                // 获取所有活跃的永续合约
-                var activeSymbols = await _binanceApiService.GetPerpetualSymbolsAsync();
-                if (activeSymbols == null || !activeSymbols.Any())
+                if (_binanceApiService == null || _rankingService == null)
                 {
-                    AppendLog("错误：无法获取有效的合约信息");
-                    return;
+                    throw new Exception("无法获取必要的服务");
                 }
 
-                // 获取当前时间
-                var endTime = DateTime.Now;
-                var startTime = endTime.AddDays(-20); // 获取20天的数据，以覆盖所有可能的周期
-
-                // 并行处理所有交易对
-                var tasks = activeSymbols.Select(async symbol =>
-                {
-                    try
-                    {
-                        // 获取K线数据
-                        var klines = await _binanceApiService.GetKlinesAsync(symbol, "1d", startTime, endTime);
-                        if (klines == null || !klines.Any()) return;
-
-                        // 计算不同周期的高低点
-                        var highLowData = new Dictionary<int, (decimal High, decimal Low)>();
-                        
-                        // 计算5日高低点
-                        var klines5d = klines.TakeLast(5).ToList();
-                        if (klines5d.Any())
-                        {
-                            highLowData[5] = (
-                                klines5d.Max(k => k.High),
-                                klines5d.Min(k => k.Low)
-                            );
-                        }
-
-                        // 计算10日高低点
-                        var klines10d = klines.TakeLast(10).ToList();
-                        if (klines10d.Any())
-                        {
-                            highLowData[10] = (
-                                klines10d.Max(k => k.High),
-                                klines10d.Min(k => k.Low)
-                            );
-                        }
-
-                        // 计算20日高低点
-                        var klines20d = klines.TakeLast(20).ToList();
-                        if (klines20d.Any())
-                        {
-                            highLowData[20] = (
-                                klines20d.Max(k => k.High),
-                                klines20d.Min(k => k.Low)
-                            );
-                        }
-
-                        // 更新缓存
-                        lock (_highLowCacheLock)
-                        {
-                            _highLowCache[symbol] = highLowData;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        AppendLog($"初始化{symbol}的高低点数据时出错: {ex.Message}");
-                    }
-                });
-
-                await Task.WhenAll(tasks);
+                AppendLog("开始获取行情数据...");
                 
-                _isHighLowCacheInitialized = true;
-                AppendLog("新高/新低数据缓存初始化完成");
+                // 使用超时任务包装API调用
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)); // 30秒超时
+                try
+                {
+                    // 获取所有交易对的24小时行情数据
+                    var tickers = await Task.Run(async () =>
+                    {
+                        try
+                        {
+                            AppendLog("正在获取永续合约列表...");
+                            var result = await _binanceApiService.Get24hrTickerAsync();
+                            if (result == null || !result.Any())
+                            {
+                                throw new Exception("获取行情数据失败：返回数据为空");
+                            }
+                            return result;
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException)
+                        {
+                            AppendLog($"获取行情数据时出错: {ex.Message}");
+                            throw;
+                        }
+                    }, cts.Token);
+
+                    AppendLog($"成功获取 {tickers.Count} 个交易对的行情数据");
+
+                    // 更新缓存
+                    lock (_highLowCacheLock)
+                    {
+                        _highLowCache.Clear(); // 清空现有缓存
+                        foreach (var ticker in tickers)
+                        {
+                            var highLowData = new Dictionary<int, (decimal High, decimal Low)>();
+                            
+                            // 使用24小时数据作为5日高低点
+                            highLowData[5] = (
+                                ticker.HighPrice,
+                                ticker.LowPrice
+                            );
+                            
+                            // 使用24小时数据作为10日高低点
+                            highLowData[10] = (
+                                ticker.HighPrice,
+                                ticker.LowPrice
+                            );
+                            
+                            // 使用24小时数据作为20日高低点
+                            highLowData[20] = (
+                                ticker.HighPrice,
+                                ticker.LowPrice
+                            );
+
+                            _highLowCache[ticker.Symbol] = highLowData;
+                        }
+                    }
+                    
+                    _isHighLowCacheInitialized = true;
+                    AppendLog($"新高/新低数据缓存初始化完成，共缓存 {_highLowCache.Count} 个交易对的数据");
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new Exception("获取行情数据超时，请检查网络连接");
+                }
             }
             catch (Exception ex)
             {
+                _isHighLowCacheInitialized = false; // 确保初始化失败时重置状态
                 AppendLog($"初始化新高/新低数据缓存时出错: {ex.Message}");
                 if (ex.InnerException != null)
                 {
                     AppendLog($"内部异常: {ex.InnerException.Message}");
                 }
+                throw; // 重新抛出异常，让调用者处理
             }
         }
 
@@ -1157,6 +1439,75 @@ namespace TCServer
             finally
             {
                 btnLoadHistory.IsEnabled = true;
+            }
+        }
+
+        private async void btnStartBreakthrough_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                btnStartBreakthrough.IsEnabled = false;
+                btnStopBreakthrough.IsEnabled = true;
+                
+                // 加载突破推送设置
+                if (File.Exists(_settingsFilePath))
+                {
+                    var settingsJson = await File.ReadAllTextAsync(_settingsFilePath);
+                    _breakthroughSettings = JsonConvert.DeserializeObject<BreakthroughSettings>(settingsJson) ?? new BreakthroughSettings();
+                }
+                else
+                {
+                    _breakthroughSettings = new BreakthroughSettings();
+                }
+                
+                // 启动突破推送
+                _isBreakthroughRunning = true;
+                AppendLog("突破推送服务已启动");
+                
+                // 注册排名更新事件处理
+                _rankingService.RankingUpdated += RankingService_RankingUpdated;
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"启动突破推送失败: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    AppendLog($"内部异常: {ex.InnerException.Message}");
+                }
+                
+                // 恢复按钮状态
+                btnStartBreakthrough.IsEnabled = true;
+                btnStopBreakthrough.IsEnabled = false;
+            }
+        }
+
+        private async void btnStopBreakthrough_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                btnStartBreakthrough.IsEnabled = false;
+                btnStopBreakthrough.IsEnabled = false;
+                
+                // 停止突破推送
+                _isBreakthroughRunning = false;
+                
+                // 取消注册排名更新事件处理
+                _rankingService.RankingUpdated -= RankingService_RankingUpdated;
+                
+                AppendLog("突破推送服务已停止");
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"停止突破推送失败: {ex.Message}");
+                if (ex.InnerException != null)
+                {
+                    AppendLog($"内部异常: {ex.InnerException.Message}");
+                }
+            }
+            finally
+            {
+                btnStartBreakthrough.IsEnabled = true;
+                btnStopBreakthrough.IsEnabled = false;
             }
         }
     }

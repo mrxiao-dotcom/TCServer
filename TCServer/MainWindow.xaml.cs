@@ -64,13 +64,13 @@ public partial class MainWindow : Window
         {
             // 计算总进度
             double totalProgress = e.TotalSymbols > 0 ? (double)e.ProcessedSymbols / e.TotalSymbols * 100 : 0;
-            progressTotal.Value = totalProgress;
-            txtProgressTotal.Text = $"{totalProgress:F1}%";
+                progressTotal.Value = totalProgress;
+                txtProgressTotal.Text = $"{totalProgress:F1}%";
             
             // 计算批次进度
             double batchProgress = e.TotalBatches > 0 ? (double)e.CurrentBatch / e.TotalBatches * 100 : 0;
-            progressBatch.Value = batchProgress;
-            txtProgressBatch.Text = $"{batchProgress:F1}%";
+                progressBatch.Value = batchProgress;
+                txtProgressBatch.Text = $"{batchProgress:F1}%";
             
             // 更新当前交易对
             txtCurrentSymbol.Text = $"当前处理: {e.CurrentSymbol} ({e.ProcessedSymbols}/{e.TotalSymbols})";
@@ -80,7 +80,7 @@ public partial class MainWindow : Window
         });
     }
 
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
+    private void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         try
         {

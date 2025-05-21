@@ -53,29 +53,29 @@ public class KlineService
 
         await Task.Yield();
         
-        _cancellationTokenSource = new CancellationTokenSource();
+            _cancellationTokenSource = new CancellationTokenSource();
         _isFetching = true;  // 设置获取状态为true
         _fetchTask = Task.Run(async () => 
         {
             try 
             {
                 // 立即执行一次数据获取
-                await FetchKlineDataAsync(_cancellationTokenSource.Token);
+            await FetchKlineDataAsync(_cancellationTokenSource.Token);
                 // 然后开始定时任务循环
                 await FetchKlineDataLoopAsync(_cancellationTokenSource.Token);
-            }
-            catch (OperationCanceledException)
-            {
+        }
+        catch (OperationCanceledException)
+        {
                 _logger.LogInformation("K线数据获取服务已取消");
-            }
-            catch (Exception ex)
-            {
+        }
+        catch (Exception ex)
+        {
                 _logger.LogError(ex, "K线数据获取服务发生错误");
             }
             finally
             {
-                _isFetching = false;
-            }
+            _isFetching = false;
+        }
         });
         _logger.LogInformation("K线数据获取服务已启动，开始首次数据获取");
     }
@@ -93,13 +93,13 @@ public class KlineService
         try
         {
             // 先取消令牌
-            _cancellationTokenSource.Cancel();
-            
+        _cancellationTokenSource.Cancel();
+        
             // 等待当前获取任务完成，最多等待10秒
-            if (_fetchTask != null)
+        if (_fetchTask != null)
+        {
+            try
             {
-                try
-                {
                     await Task.WhenAny(_fetchTask, Task.Delay(10000));
                     
                     // 如果任务还在运行，记录警告
@@ -107,25 +107,25 @@ public class KlineService
                     {
                         _logger.LogWarning("等待数据获取任务超时，强制停止服务");
                     }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "等待数据获取任务结束时发生错误");
-                }
             }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "等待数据获取任务结束时发生错误");
+            }
+        }
         }
         finally
         {
             // 确保资源被释放
             if (_cancellationTokenSource != null)
             {
-                _cancellationTokenSource.Dispose();
-                _cancellationTokenSource = null;
+        _cancellationTokenSource.Dispose();
+        _cancellationTokenSource = null;
             }
             
-            _fetchTask = null;
-            _isFetching = false;
-            _logger.LogInformation("K线数据获取服务已停止");
+        _fetchTask = null;
+        _isFetching = false;
+        _logger.LogInformation("K线数据获取服务已停止");
         }
     }
 
@@ -163,15 +163,15 @@ public class KlineService
                 }
                 else
                 {
-                    try 
-                    {
-                        fetchTime = TimeSpan.Parse(config.Value);
+                try 
+                {
+                    fetchTime = TimeSpan.Parse(config.Value);
                         _logger.LogInformation($"使用配置的K线获取时间: {fetchTime:hh\\:mm\\:ss}");
-                    }
-                    catch (Exception)
-                    {
+                }
+                catch (Exception)
+                {
                         _logger.LogError($"K线获取时间格式错误: {config.Value}，使用默认值 03:00:00");
-                        fetchTime = TimeSpan.Parse("03:00:00");
+                    fetchTime = TimeSpan.Parse("03:00:00");
                     }
                 }
                 
@@ -184,27 +184,27 @@ public class KlineService
                 {
                     nextFetchTime = nextFetchTime.AddDays(1);
                 }
-                
+
                 var delay = nextFetchTime - now;
                 _logger.LogInformation($"下次获取时间：{nextFetchTime:yyyy-MM-dd HH:mm:ss}，距离现在还有 {delay.TotalHours:F1} 小时");
                 
                 // 等待到执行时间
                 try
                 {
-                    await Task.Delay(delay, cancellationToken);
+                await Task.Delay(delay, cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                     _logger.LogInformation("等待过程被取消");
                     break;
                 }
-                
+
                 if (cancellationToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("服务已被取消，退出循环");
                     break;
                 }
-                
+
                 // 执行数据获取
                 _logger.LogInformation($"到达执行时间 {DateTime.Now:HH:mm:ss}，开始获取数据");
                 await FetchKlineDataAsync(cancellationToken);
@@ -226,7 +226,7 @@ public class KlineService
                 // 发生错误后等待5分钟再重试
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
+                await Task.Delay(TimeSpan.FromMinutes(5), cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -252,117 +252,117 @@ public class KlineService
                 _logger.LogInformation($"今天({today:yyyy-MM-dd})的数据已经获取，跳过本次更新");
                 return;
             }
+        
+        ProcessedSymbols = 0;
+        CurrentBatch = 0;
 
-            ProcessedSymbols = 0;
-            CurrentBatch = 0;
-
-            // 获取所有永续合约交易对
+        // 获取所有永续合约交易对
             _logger.LogInformation("正在获取交易对信息...");
-            var symbols = await _binanceApiService.GetPerpetualSymbolsAsync();
+        var symbols = await _binanceApiService.GetPerpetualSymbolsAsync();
             if (symbols == null || symbols.Count == 0)
-            {
+        {
                 _logger.LogError("获取交易对信息失败或返回空列表");
-                return;
-            }
+            return;
+        }
 
-            TotalSymbols = symbols.Count;
+        TotalSymbols = symbols.Count;
             _logger.LogInformation($"共获取到{TotalSymbols}个交易对: {string.Join(", ", symbols.Take(5))}...");
-            
-            // 更新批次大小设置为50
-            var batchSizeConfig = await _configRepository.GetConfigAsync("BatchSize");
-            int batchSize = 50;
-            if (batchSizeConfig != null && !string.IsNullOrEmpty(batchSizeConfig.Value) && int.TryParse(batchSizeConfig.Value, out int configBatchSize))
-            {
-                batchSize = configBatchSize;
+        
+        // 更新批次大小设置为50
+        var batchSizeConfig = await _configRepository.GetConfigAsync("BatchSize");
+        int batchSize = 50;
+        if (batchSizeConfig != null && !string.IsNullOrEmpty(batchSizeConfig.Value) && int.TryParse(batchSizeConfig.Value, out int configBatchSize))
+        {
+            batchSize = configBatchSize;
                 _logger.LogInformation($"使用配置的批次大小: {batchSize}");
-            }
-            else
-            {
+        }
+        else
+        {
                 _logger.LogInformation($"使用默认批次大小: {batchSize}");
-                // 保存默认批次大小
-                try
+            // 保存默认批次大小
+            try
+            {
+                await _configRepository.SaveConfigAsync(new SystemConfig
                 {
-                    await _configRepository.SaveConfigAsync(new SystemConfig
-                    {
-                        Key = "BatchSize",
-                        Value = batchSize.ToString(),
-                        Description = "每批次处理的交易对数量",
-                        CreatedAt = DateTime.Now
-                    });
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "保存默认批次大小配置失败");
-                }
+                    Key = "BatchSize",
+                    Value = batchSize.ToString(),
+                    Description = "每批次处理的交易对数量",
+                    CreatedAt = DateTime.Now
+                });
             }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "保存默认批次大小配置失败");
+            }
+        }
 
-            // 使用变量存储集合的数量，避免方法组错误
-            int symbolCount = symbols.Count;
-            TotalBatches = (symbolCount + batchSize - 1) / batchSize; // 计算总批次数
+        // 使用变量存储集合的数量，避免方法组错误
+        int symbolCount = symbols.Count;
+        TotalBatches = (symbolCount + batchSize - 1) / batchSize; // 计算总批次数
             _logger.LogInformation($"将分{TotalBatches}批处理{symbolCount}个交易对");
-            
-            for (int i = 0; i < symbolCount; i += batchSize)
+        
+        for (int i = 0; i < symbolCount; i += batchSize)
+        {
+            if (cancellationToken.IsCancellationRequested)
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    _logger.LogInformation("K线数据获取已取消");
-                    break;
-                }
-                
-                CurrentBatch++;
-                var batch = symbols.Skip(i).Take(batchSize).ToList();
-                
-                // 更新进度信息
-                _logger.LogInformation($"正在处理第{CurrentBatch}/{TotalBatches}批交易对，当前批次包含{batch.Count}个交易对: {string.Join(", ", batch.Take(3))}...");
-                OnProgressUpdated(new ProgressUpdateEventArgs
-                {
-                    TotalSymbols = TotalSymbols,
-                    ProcessedSymbols = ProcessedSymbols,
-                    CurrentBatch = CurrentBatch,
-                    TotalBatches = TotalBatches,
-                    CurrentSymbol = string.Empty,
-                    Message = $"批次进度：{CurrentBatch}/{TotalBatches}"
-                });
-                
-                await ProcessSymbolBatchAsync(batch, cancellationToken);
+                _logger.LogInformation("K线数据获取已取消");
+                break;
             }
-
-            if (!cancellationToken.IsCancellationRequested)
+            
+            CurrentBatch++;
+            var batch = symbols.Skip(i).Take(batchSize).ToList();
+            
+            // 更新进度信息
+                _logger.LogInformation($"正在处理第{CurrentBatch}/{TotalBatches}批交易对，当前批次包含{batch.Count}个交易对: {string.Join(", ", batch.Take(3))}...");
+            OnProgressUpdated(new ProgressUpdateEventArgs
             {
-                _logger.LogInformation("K线数据获取完成");
-                OnProgressUpdated(new ProgressUpdateEventArgs
+                TotalSymbols = TotalSymbols,
+                ProcessedSymbols = ProcessedSymbols,
+                CurrentBatch = CurrentBatch,
+                TotalBatches = TotalBatches,
+                CurrentSymbol = string.Empty,
+                Message = $"批次进度：{CurrentBatch}/{TotalBatches}"
+            });
+            
+            await ProcessSymbolBatchAsync(batch, cancellationToken);
+        }
+
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("K线数据获取完成");
+            OnProgressUpdated(new ProgressUpdateEventArgs
+            {
+                TotalSymbols = TotalSymbols,
+                ProcessedSymbols = TotalSymbols,
+                CurrentBatch = TotalBatches,
+                TotalBatches = TotalBatches,
+                CurrentSymbol = string.Empty,
+                Message = "数据获取完成"
+            });
+            
+            // 调用排名计算服务
+            try
+            {
+                var serviceProvider = ServiceProviderAccessor.ServiceProvider;
+                if (serviceProvider != null)
                 {
-                    TotalSymbols = TotalSymbols,
-                    ProcessedSymbols = TotalSymbols,
-                    CurrentBatch = TotalBatches,
-                    TotalBatches = TotalBatches,
-                    CurrentSymbol = string.Empty,
-                    Message = "数据获取完成"
-                });
-                
-                // 调用排名计算服务
-                try
-                {
-                    var serviceProvider = ServiceProviderAccessor.ServiceProvider;
-                    if (serviceProvider != null)
+                    var rankingService = serviceProvider.GetService<RankingService>();
+                    if (rankingService != null)
                     {
-                        var rankingService = serviceProvider.GetService<RankingService>();
-                        if (rankingService != null)
-                        {
-                            _logger.LogInformation("开始计算排名数据");
-                            await rankingService.CalculateRankingAfterKlineUpdateAsync();
-                            _logger.LogInformation("排名数据计算完成");
-                        }
-                        else
-                        {
-                            _logger.LogWarning("无法获取RankingService实例，跳过排名计算");
-                        }
+                        _logger.LogInformation("开始计算排名数据");
+                        await rankingService.CalculateRankingAfterKlineUpdateAsync();
+                        _logger.LogInformation("排名数据计算完成");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("无法获取RankingService实例，跳过排名计算");
                     }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "调用排名计算服务时发生错误");
-                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "调用排名计算服务时发生错误");
+            }
             }
         }
         catch (Exception ex)
@@ -476,21 +476,21 @@ public class KlineService
                     var klineData = klines
                         .Where(k => datesToFetch.Contains(k.OpenTime.Date))
                         .Select(k => new KlineData
-                        {
-                            Symbol = symbol,
-                            OpenTime = k.OpenTime,
-                            OpenPrice = k.Open,
-                            HighPrice = k.High,
-                            LowPrice = k.Low,
-                            ClosePrice = k.Close,
-                            Volume = k.Volume,
-                            CloseTime = k.CloseTime,
-                            QuoteVolume = k.QuoteVolume,
-                            TradeCount = k.TradeCount,
-                            TakerBuyVolume = k.TakerBuyVolume,
-                            TakerBuyQuoteVolume = k.TakerBuyQuoteVolume,
-                            CreatedAt = DateTime.Now
-                        }).ToList();
+                    {
+                        Symbol = symbol,
+                        OpenTime = k.OpenTime,
+                        OpenPrice = k.Open,
+                        HighPrice = k.High,
+                        LowPrice = k.Low,
+                        ClosePrice = k.Close,
+                        Volume = k.Volume,
+                        CloseTime = k.CloseTime,
+                        QuoteVolume = k.QuoteVolume,
+                        TradeCount = k.TradeCount,
+                        TakerBuyVolume = k.TakerBuyVolume,
+                        TakerBuyQuoteVolume = k.TakerBuyQuoteVolume,
+                        CreatedAt = DateTime.Now
+                    }).ToList();
 
                     // 检查集合是否有元素
                     bool hasData = klineData.Count > 0;

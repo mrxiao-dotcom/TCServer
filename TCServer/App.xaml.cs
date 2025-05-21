@@ -295,38 +295,17 @@ public partial class App : Application
                 var sleepingConnections = Convert.ToInt32(reader.GetValue(1));
                 var activeConnections = Convert.ToInt32(reader.GetValue(2));
                 var maxConnectionTime = Convert.ToInt32(reader.GetValue(3));
-                var connectionDetails = Convert.ToString(reader.GetValue(4)) ?? "";
                 
                 // 获取更详细的连接池统计信息
                 var stats = TCServer.Data.Repositories.DatabaseHelper.GetConnectionStats();
                 
-                _logger?.LogInformation(
-                    "数据库连接池状态报告:\n" +
-                    "1. MySQL服务器连接统计 (当前用户):\n" +
-                    $"   - 总连接数: {totalConnections}\n" +
-                    $"   - 休眠连接: {sleepingConnections} (空闲连接)\n" +
-                    $"   - 活动连接: {activeConnections} (正在执行命令)\n" +
-                    $"   - 最长连接时间: {maxConnectionTime}秒\n" +
-                    "2. 应用程序操作统计:\n" +
-                    $"   - 当前并行操作数: {stats.activeConnections} (最多允许10个)\n" +
-                    $"   - 可用操作槽数: {stats.availableSemaphoreCount}\n" +
-                    $"   - 历史最大并行数: {stats.maxConcurrentConnections}\n" +
-                    "3. 当前活跃操作列表:\n" +
-                    string.Join("\n", stats.activeConnectionDetails.Select(x => "   " + x)) + "\n" +
-                    "4. MySQL连接详情:\n" +
-                    (string.IsNullOrEmpty(connectionDetails) ? 
-                        "   当前没有活跃连接" : 
-                        string.Join("\n", connectionDetails.Split('|').Select(x => "   " + x))));
-                
-                // 如果连接数异常，记录警告
-                if (totalConnections > 20 || stats.activeConnections > 10 || maxConnectionTime > 300)
+                // 只在连接数异常时记录警告
+                if (totalConnections > 40 || activeConnections > 30 || stats.activeConnections > 8)
                 {
                     _logger?.LogWarning(
-                        "检测到异常连接状态:\n" +
-                        $"1. MySQL连接数: {totalConnections} (超过20)\n" +
-                        $"2. 应用操作数: {stats.activeConnections} (超过10)\n" +
-                        $"3. 最长连接时间: {maxConnectionTime}秒 (超过300秒)\n" +
-                        "请检查是否有连接泄漏或长时间运行的操作");
+                        "数据库连接池异常状态:\n" +
+                        $"总连接数: {totalConnections}, 活动连接: {activeConnections}, " +
+                        $"应用并行操作: {stats.activeConnections}/{stats.maxConcurrentConnections}");
                 }
             }
         }
