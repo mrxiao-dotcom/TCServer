@@ -18,6 +18,8 @@ using Newtonsoft.Json;
 using System.Net.Http;
 using System.Text;
 using TCServer.Models;
+using TCServer.BreakthroughAlert.Services.Interfaces;
+using TCServer.BreakthroughAlert.Models;
 
 namespace TCServer
 {
@@ -26,6 +28,7 @@ namespace TCServer
         private readonly IDailyRankingRepository _rankingRepository;
         private readonly RankingService _rankingService;
         private readonly BinanceApiService _binanceApiService;
+        private readonly IBreakthroughMonitor _breakthroughMonitor;
         private readonly ILogger<RankingWindow> _logger;
         private CancellationTokenSource? _realtimeCts;
         private readonly ObservableCollection<HistoryRankingViewModel> _historyRankings;
@@ -80,6 +83,7 @@ namespace TCServer
             _rankingRepository = host.Services.GetRequiredService<IDailyRankingRepository>();
             _rankingService = host.Services.GetRequiredService<RankingService>();
             _binanceApiService = host.Services.GetRequiredService<BinanceApiService>();
+            _breakthroughMonitor = host.Services.GetRequiredService<IBreakthroughMonitor>();
             _logger = host.Services.GetRequiredService<ILogger<RankingWindow>>();
             
             // 订阅排名服务的日志事件
@@ -118,6 +122,11 @@ namespace TCServer
             
             // 注释掉自动初始化缓存
             // InitializeHighLowCacheAsync();
+
+            // 订阅突破监控服务的事件
+            _breakthroughMonitor.OnBreakthrough += BreakthroughMonitor_OnBreakthrough;
+            _breakthroughMonitor.OnStatusChanged += BreakthroughMonitor_OnStatusChanged;
+            _breakthroughMonitor.OnError += BreakthroughMonitor_OnError;
         }
         
         // 处理排名服务日志事件
@@ -156,11 +165,11 @@ namespace TCServer
                                 var breakthroughEvent = new BreakthroughEvent
                                 {
                                     Symbol = symbol,
-                                    Percentage = percentage * 100,
-                                    IsUptrend = percentage > 0,
+                                    ChangePercent = percentage * 100,
+                                    Type = percentage > 0 ? BreakthroughType.UpThreshold : BreakthroughType.DownThreshold,
                                     ThresholdValue = Math.Abs(percentage) * 100,
                                     Volume = realtimeData.QuoteVolume,
-                                    Timestamp = DateTime.Now
+                                    EventTime = DateTime.Now
                                 };
                                 
                                 lock (_pendingEventsLock)
@@ -263,11 +272,11 @@ namespace TCServer
                                 if (rankings.Any())
                                 {
                                     // 更新UI
-                                    await Dispatcher.InvokeAsync(() =>
+                                    await Dispatcher.InvokeAsync(async () =>
                                     {
                                         try
                                         {
-                                            UpdateRealtimeRankings(rankings);
+                                            await UpdateRealtimeRankings(rankings);
                                             _lastUpdateTime = DateTime.Now;
                                             _nextUpdateTime = _lastUpdateTime.AddSeconds(5);
                                             UpdateStatusTexts();
@@ -355,7 +364,7 @@ namespace TCServer
             }
         }
 
-        private void UpdateRealtimeRankings(List<RealtimeRankingViewModel> rankings)
+        private async Task UpdateRealtimeRankings(List<RealtimeRankingViewModel> rankings)
         {
             try
             {
@@ -391,7 +400,7 @@ namespace TCServer
                 }
                 
                 // 检查突破提醒
-                CheckAndSendBreakthroughAlerts(sortedRankings);
+                await CheckAndSendBreakthroughAlerts(sortedRankings);
             }
             catch (Exception ex)
             {
@@ -685,10 +694,11 @@ namespace TCServer
                         {
                             _rankingService.RankingUpdated -= RankingService_RankingUpdated;
                         }
-                        await Dispatcher.InvokeAsync(() =>
+                        await Dispatcher.InvokeAsync(async () =>
                         {
                             btnStartBreakthrough.IsEnabled = true;
                             btnStopBreakthrough.IsEnabled = false;
+                            await _breakthroughMonitor.StopMonitoringAsync();
                         });
                         AppendLog("突破推送已停止");
                     }
@@ -838,6 +848,11 @@ namespace TCServer
                     _rankingService.LogUpdated -= RankingService_LogUpdated;
                     _rankingService.RankingUpdated -= RankingService_RankingUpdated;
                 }
+                
+                // 取消订阅突破监控服务的事件
+                _breakthroughMonitor.OnBreakthrough -= BreakthroughMonitor_OnBreakthrough;
+                _breakthroughMonitor.OnStatusChanged -= BreakthroughMonitor_OnStatusChanged;
+                _breakthroughMonitor.OnError -= BreakthroughMonitor_OnError;
                 
                 // 异步停止实时排名
                 if (_isRealtimeRunning)
@@ -1009,11 +1024,11 @@ namespace TCServer
                     var breakthroughEvent = new BreakthroughEvent
                     {
                         Symbol = symbol,
-                        Percentage = percentage,
-                        IsUptrend = isUptrend,
-                        ThresholdValue = thresholdValue,
+                        ChangePercent = percentage * 100,
+                        Type = isUptrend ? BreakthroughType.UpThreshold : BreakthroughType.DownThreshold,
+                        ThresholdValue = Math.Abs(percentage) * 100,
                         Volume = volume,
-                        Timestamp = DateTime.Now
+                        EventTime = DateTime.Now
                     };
                     
                     lock (_pendingEventsLock)
@@ -1079,14 +1094,12 @@ namespace TCServer
                     var breakthroughEvent = new BreakthroughEvent
                     {
                         Symbol = symbol,
-                        Percentage = (currentPrice - highPrice) / highPrice * 100,
-                        IsUptrend = true,
+                        ChangePercent = (currentPrice - highPrice) / highPrice * 100,
+                        Type = BreakthroughType.NewHigh,
                         ThresholdValue = days,
                         Volume = volume,
-                        Timestamp = DateTime.Now,
-                        IsHighLowBreakthrough = true,
-                        Days = days,
-                        IsHigh = true
+                        EventTime = DateTime.Now,
+                        Days = days
                     };
 
                     lock (_pendingEventsLock)
@@ -1103,14 +1116,12 @@ namespace TCServer
                     var breakthroughEvent = new BreakthroughEvent
                     {
                         Symbol = symbol,
-                        Percentage = (currentPrice - lowPrice) / lowPrice * 100,
-                        IsUptrend = false,
+                        ChangePercent = (currentPrice - lowPrice) / lowPrice * 100,
+                        Type = BreakthroughType.NewLow,
                         ThresholdValue = days,
                         Volume = volume,
-                        Timestamp = DateTime.Now,
-                        IsHighLowBreakthrough = true,
-                        Days = days,
-                        IsHigh = false
+                        EventTime = DateTime.Now,
+                        Days = days
                     };
 
                     lock (_pendingEventsLock)
@@ -1453,19 +1464,52 @@ namespace TCServer
                 if (File.Exists(_settingsFilePath))
                 {
                     var settingsJson = await File.ReadAllTextAsync(_settingsFilePath);
-                    _breakthroughSettings = JsonConvert.DeserializeObject<BreakthroughSettings>(settingsJson) ?? new BreakthroughSettings();
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(settingsJson);
+                    if (settings?.BreakthroughSettings != null)
+                    {
+                        // 转换为BreakthroughConfig
+                        var config = new BreakthroughConfig
+                        {
+                            UpThresholds = new List<ThresholdConfig>
+                            {
+                                new() { Value = settings.BreakthroughSettings.Threshold1, IsEnabled = settings.BreakthroughSettings.Threshold1Enabled, Description = $"{settings.BreakthroughSettings.Threshold1}%涨幅" },
+                                new() { Value = settings.BreakthroughSettings.Threshold2, IsEnabled = settings.BreakthroughSettings.Threshold2Enabled, Description = $"{settings.BreakthroughSettings.Threshold2}%涨幅" },
+                                new() { Value = settings.BreakthroughSettings.Threshold3, IsEnabled = settings.BreakthroughSettings.Threshold3Enabled, Description = $"{settings.BreakthroughSettings.Threshold3}%涨幅" }
+                            },
+                            DownThresholds = new List<ThresholdConfig>
+                            {
+                                new() { Value = -settings.BreakthroughSettings.Threshold1, IsEnabled = settings.BreakthroughSettings.Threshold1Enabled, Description = $"{settings.BreakthroughSettings.Threshold1}%跌幅" },
+                                new() { Value = -settings.BreakthroughSettings.Threshold2, IsEnabled = settings.BreakthroughSettings.Threshold2Enabled, Description = $"{settings.BreakthroughSettings.Threshold2}%跌幅" },
+                                new() { Value = -settings.BreakthroughSettings.Threshold3, IsEnabled = settings.BreakthroughSettings.Threshold3Enabled, Description = $"{settings.BreakthroughSettings.Threshold3}%跌幅" }
+                            },
+                            NewHighConfigs = new List<NewHighConfig>
+                            {
+                                new() { Days = settings.BreakthroughSettings.HighLowDays1, IsEnabled = settings.BreakthroughSettings.HighLowDays1Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays1}天新高" },
+                                new() { Days = settings.BreakthroughSettings.HighLowDays2, IsEnabled = settings.BreakthroughSettings.HighLowDays2Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays2}天新高" },
+                                new() { Days = settings.BreakthroughSettings.HighLowDays3, IsEnabled = settings.BreakthroughSettings.HighLowDays3Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays3}天新高" }
+                            },
+                            NewLowConfigs = new List<NewLowConfig>
+                            {
+                                new() { Days = settings.BreakthroughSettings.HighLowDays1, IsEnabled = settings.BreakthroughSettings.HighLowDays1Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays1}天新低" },
+                                new() { Days = settings.BreakthroughSettings.HighLowDays2, IsEnabled = settings.BreakthroughSettings.HighLowDays2Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays2}天新低" },
+                                new() { Days = settings.BreakthroughSettings.HighLowDays3, IsEnabled = settings.BreakthroughSettings.HighLowDays3Enabled, Description = $"{settings.BreakthroughSettings.HighLowDays3}天新低" }
+                            },
+                            NotificationConfig = new NotificationConfig
+                            {
+                                NotificationUrl = settings.BreakthroughSettings.NotificationUrl,
+                                MessageTemplate = "{symbol} {type}突破提醒：当前价格{price}，变化幅度{change}%，成交额{volume}",
+                                RetryCount = 3,
+                                RetryIntervalSeconds = 5
+                            }
+                        };
+
+                        // 更新配置并启动监控
+                        await _breakthroughMonitor.UpdateConfigAsync(config);
+                        await _breakthroughMonitor.StartMonitoringAsync();
+                        _isBreakthroughRunning = true;
+                        AppendLog("突破推送服务已启动");
+                    }
                 }
-                else
-                {
-                    _breakthroughSettings = new BreakthroughSettings();
-                }
-                
-                // 启动突破推送
-                _isBreakthroughRunning = true;
-                AppendLog("突破推送服务已启动");
-                
-                // 注册排名更新事件处理
-                _rankingService.RankingUpdated += RankingService_RankingUpdated;
             }
             catch (Exception ex)
             {
@@ -1489,10 +1533,8 @@ namespace TCServer
                 btnStopBreakthrough.IsEnabled = false;
                 
                 // 停止突破推送
+                await _breakthroughMonitor.StopMonitoringAsync();
                 _isBreakthroughRunning = false;
-                
-                // 取消注册排名更新事件处理
-                _rankingService.RankingUpdated -= RankingService_RankingUpdated;
                 
                 AppendLog("突破推送服务已停止");
             }
@@ -1509,6 +1551,49 @@ namespace TCServer
                 btnStartBreakthrough.IsEnabled = true;
                 btnStopBreakthrough.IsEnabled = false;
             }
+        }
+
+        private void BreakthroughMonitor_OnBreakthrough(object? sender, BreakthroughEvent e)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                var direction = e.Type switch
+                {
+                    BreakthroughType.UpThreshold => "上涨",
+                    BreakthroughType.DownThreshold => "下跌",
+                    BreakthroughType.NewHigh => "新高",
+                    BreakthroughType.NewLow => "新低",
+                    _ => "未知"
+                };
+                AppendLog($"突破提醒：{e.Symbol} {direction}突破 {e.Description}，当前价格：{e.CurrentPrice:F8}，变化幅度：{e.ChangePercent:F2}%，成交额：{FormatVolume(e.Volume)}");
+            });
+        }
+
+        private void BreakthroughMonitor_OnStatusChanged(object? sender, MonitorStatus status)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                var statusText = status switch
+                {
+                    MonitorStatus.Running => "运行中",
+                    MonitorStatus.Stopped => "已停止",
+                    MonitorStatus.Error => "错误",
+                    _ => "未知"
+                };
+                AppendLog($"突破推送服务状态变更：{statusText}");
+            });
+        }
+
+        private void BreakthroughMonitor_OnError(object? sender, Exception e)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                AppendLog($"突破推送服务错误：{e.Message}");
+                if (e.InnerException != null)
+                {
+                    AppendLog($"内部异常：{e.InnerException.Message}");
+                }
+            });
         }
     }
 
@@ -1565,21 +1650,5 @@ namespace TCServer
         public string Rank8 { get; set; } = string.Empty;
         public string Rank9 { get; set; } = string.Empty;
         public string Rank10 { get; set; } = string.Empty;
-    }
-    
-
-
-    // 突破事件类
-    public class BreakthroughEvent
-    {
-        public string Symbol { get; set; }
-        public decimal Percentage { get; set; }
-        public bool IsUptrend { get; set; }
-        public decimal ThresholdValue { get; set; }
-        public decimal Volume { get; set; }
-        public DateTime Timestamp { get; set; }
-        public bool IsHighLowBreakthrough { get; set; }
-        public int Days { get; set; }
-        public bool IsHigh { get; set; }
     }
 } 

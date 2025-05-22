@@ -13,6 +13,7 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="Serilog" Version="4.2.0" />
@@ -24,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\TCServer.Core\TCServer.Core.csproj" />
     <ProjectReference Include="..\TCServer.Data\TCServer.Data.csproj" />
+    <ProjectReference Include="..\TCServer.BreakthroughAlert\TCServer.BreakthroughAlert.csproj" />
   </ItemGroup>
 
 </Project> 

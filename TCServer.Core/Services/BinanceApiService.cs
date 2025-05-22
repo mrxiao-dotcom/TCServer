@@ -124,21 +124,21 @@ namespace TCServer.Core.Services
             {
                 try
                 {
-                    _logger.LogInformation("开始创建CancellationTokenSource");
+                    //_logger.LogInformation("开始创建CancellationTokenSource");
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                    _logger.LogInformation("CancellationTokenSource创建完成");
+                    //_logger.LogInformation("CancellationTokenSource创建完成");
                     
                     // 使用U本位合约API的exchangeInfo接口
                     var url = $"{GetCurrentBaseUrl()}/fapi/v1/exchangeInfo";
-                    _logger.LogInformation($"准备发送HTTP请求: {url}");
+                    //_logger.LogInformation($"准备发送HTTP请求: {url}");
                     
-                    _logger.LogInformation("开始发送HTTP请求...");
+                    //_logger.LogInformation("开始发送HTTP请求...");
                     var response = await _httpClient.GetAsync(url, cts.Token);
-                    _logger.LogInformation($"HTTP请求完成，状态码: {(int)response.StatusCode}");
+                    //_logger.LogInformation($"HTTP请求完成，状态码: {(int)response.StatusCode}");
                     
-                    _logger.LogInformation("开始读取响应内容...");
+                    //_logger.LogInformation("开始读取响应内容...");
                     var responseContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogInformation($"响应内容读取完成，长度: {responseContent?.Length ?? 0} 字符");
+                   // _logger.LogInformation($"响应内容读取完成，长度: {responseContent?.Length ?? 0} 字符");
                     
                     if (!response.IsSuccessStatusCode)
                     {
@@ -152,11 +152,11 @@ namespace TCServer.Core.Services
                         return new List<string>();
                     }
                     
-                    _logger.LogInformation($"开始解析JSON响应...");
+                    //_logger.LogInformation($"开始解析JSON响应...");
                     try
                     {
                         var exchangeInfo = JsonSerializer.Deserialize<ExchangeInfoResponse>(responseContent);
-                        _logger.LogInformation("JSON解析完成");
+                        //_logger.LogInformation("JSON解析完成");
                         
                         if (exchangeInfo?.Symbols == null)
                         {
@@ -164,12 +164,12 @@ namespace TCServer.Core.Services
                             return new List<string>();
                         }
                         
-                        _logger.LogInformation($"开始处理 {exchangeInfo.Symbols.Count} 个交易对...");
+                        //_logger.LogInformation($"开始处理 {exchangeInfo.Symbols.Count} 个交易对...");
                         
                         // 记录所有交易对的信息
                         foreach (var symbol in exchangeInfo.Symbols)
                         {
-                            _logger.LogDebug($"交易对信息: Symbol={symbol.Symbol}, Status={symbol.Status}, ContractType={symbol.ContractType}, QuoteAsset={symbol.QuoteAsset}");
+                            //_logger.LogDebug($"交易对信息: Symbol={symbol.Symbol}, Status={symbol.Status}, ContractType={symbol.ContractType}, QuoteAsset={symbol.QuoteAsset}");
                         }
                         
                         var symbols = new List<string>();
@@ -183,7 +183,7 @@ namespace TCServer.Core.Services
                                     symbol.QuoteAsset == "USDT")  // 使用QuoteAsset而不是MarginAsset
                                 {
                                     symbols.Add(symbol.Symbol);
-                                    _logger.LogInformation($"添加交易对: {symbol.Symbol}, 状态: {symbol.Status}, 合约类型: {symbol.ContractType}, 计价资产: {symbol.QuoteAsset}");
+                                    //_logger.LogInformation($"添加交易对: {symbol.Symbol}, 状态: {symbol.Status}, 合约类型: {symbol.ContractType}, 计价资产: {symbol.QuoteAsset}");
                                 }
                                 else
                                 {
@@ -196,7 +196,7 @@ namespace TCServer.Core.Services
                             }
                         }
                         
-                        _logger.LogInformation($"交易对处理完成，找到 {symbols.Count} 个符合条件的交易对");
+                        //_logger.LogInformation($"交易对处理完成，找到 {symbols.Count} 个符合条件的交易对");
                         
                         if (!symbols.Any())
                         {
@@ -304,20 +304,20 @@ namespace TCServer.Core.Services
                 try
                 {
                     // 首先获取所有活跃的永续合约
-                    _logger.LogInformation("开始获取永续合约列表...");
+                    //_logger.LogInformation("开始获取永续合约列表...");
                     var activeSymbols = await GetPerpetualSymbolsAsync();
                     if (activeSymbols == null || !activeSymbols.Any())
                     {
                         _logger.LogWarning("未获取到活跃的永续合约列表，返回空数据");
                         return new List<TickerPriceDto>();
                     }
-                    _logger.LogInformation($"成功获取到 {activeSymbols.Count} 个活跃永续合约");
+                   // _logger.LogInformation($"成功获取到 {activeSymbols.Count} 个活跃永续合约");
 
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                     
                     // 使用U本位合约API的24小时行情接口
                     var url = $"{GetCurrentBaseUrl()}/fapi/v1/ticker/24hr";
-                    _logger.LogInformation($"正在请求24小时行情数据: {url}");
+                    //_logger.LogInformation($"正在请求24小时行情数据: {url}");
                     
                     var response = await _httpClient.GetAsync(url, cts.Token);
                     var responseContent = await response.Content.ReadAsStringAsync();
@@ -334,8 +334,8 @@ namespace TCServer.Core.Services
                         return new List<TickerPriceDto>();
                     }
                     
-                    _logger.LogInformation($"获取到24小时行情数据响应: {responseContent.Length} 字符");
-                    _logger.LogDebug($"响应内容: {responseContent}");
+                    //_logger.LogInformation($"获取到24小时行情数据响应: {responseContent.Length} 字符");
+                    //_logger.LogDebug($"响应内容: {responseContent}");
                     
                     var tickers = JsonSerializer.Deserialize<List<TickerPriceDto>>(responseContent);
                     if (tickers == null)
@@ -349,7 +349,7 @@ namespace TCServer.Core.Services
                         .Where(t => t.Symbol.EndsWith("USDT") && activeSymbols.Contains(t.Symbol))
                         .ToList();
                     
-                    _logger.LogInformation($"成功解析到 {filteredTickers.Count} 个活跃交易对的24小时行情数据");
+                    //_logger.LogInformation($"成功解析到 {filteredTickers.Count} 个活跃交易对的24小时行情数据");
                     
                     // 验证数据有效性
                     foreach (var ticker in filteredTickers)
@@ -511,13 +511,13 @@ namespace TCServer.Core.Services
         {
             var operationId = Interlocked.Increment(ref _operationCounter);
             var startTime = DateTime.Now;
-            _logger.LogInformation($"操作ID: {operationId}, 类型: {operationName}, 开始时间: {startTime:HH:mm:ss.fff}, 线程ID: {Thread.CurrentThread.ManagedThreadId}");
+            //_logger.LogInformation($"操作ID: {operationId}, 类型: {operationName}, 开始时间: {startTime:HH:mm:ss.fff}, 线程ID: {Thread.CurrentThread.ManagedThreadId}");
 
             try
             {
-                _logger.LogInformation($"操作ID: {operationId}, 等待请求信号量...");
+                //_logger.LogInformation($"操作ID: {operationId}, 等待请求信号量...");
                 await _requestSemaphore.WaitAsync();
-                _logger.LogInformation($"操作ID: {operationId}, 获得请求信号量");
+                //_logger.LogInformation($"操作ID: {operationId}, 获得请求信号量");
                 
                 int retryCount = 0;
                 while (retryCount < MAX_RETRY_COUNT)
@@ -532,7 +532,7 @@ namespace TCServer.Core.Services
                             if (timeSinceLastRequest < MIN_REQUEST_INTERVAL_MS)
                             {
                                 var delay = (int)(MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest);
-                                _logger.LogInformation($"操作ID: {operationId}, 等待请求间隔: {delay}ms");
+                                //_logger.LogInformation($"操作ID: {operationId}, 等待请求间隔: {delay}ms");
                                 await Task.Delay(delay);
                             }
                         }
@@ -541,16 +541,16 @@ namespace TCServer.Core.Services
                             _rateLimitSemaphore.Release();
                         }
 
-                        _logger.LogInformation($"操作ID: {operationId}, 开始执行请求函数, 重试次数: {retryCount}");
+                        //_logger.LogInformation($"操作ID: {operationId}, 开始执行请求函数, 重试次数: {retryCount}");
                         var result = await requestFunc();
-                        _logger.LogInformation($"操作ID: {operationId}, 请求函数执行完成");
+                        //_logger.LogInformation($"操作ID: {operationId}, 请求函数执行完成");
                         
                         _lastRequestTime = DateTime.Now;
                         _consecutiveFailures = 0;
                         
                         var endTime = DateTime.Now;
                         var duration = (endTime - startTime).TotalSeconds;
-                        _logger.LogInformation($"操作ID: {operationId}, 类型: {operationName}, 完成时间: {endTime:HH:mm:ss.fff}, 已运行: {duration:F2}秒, 结果: 成功");
+                        //_logger.LogInformation($"操作ID: {operationId}, 类型: {operationName}, 完成时间: {endTime:HH:mm:ss.fff}, 已运行: {duration:F2}秒, 结果: 成功");
                         
                         return result;
                     }
@@ -561,7 +561,7 @@ namespace TCServer.Core.Services
                         
                         var endTime = DateTime.Now;
                         var duration = (endTime - startTime).TotalSeconds;
-                        _logger.LogWarning($"操作ID: {operationId}, 类型: {operationName}, 尝试 {retryCount}/{MAX_RETRY_COUNT} 失败, 已运行: {duration:F2}秒, 错误: {ex.Message}, 堆栈: {ex.StackTrace}");
+                        //_logger.LogWarning($"操作ID: {operationId}, 类型: {operationName}, 尝试 {retryCount}/{MAX_RETRY_COUNT} 失败, 已运行: {duration:F2}秒, 错误: {ex.Message}, 堆栈: {ex.StackTrace}");
                     
                     if (_consecutiveFailures >= MAX_FAILURES_BEFORE_SWITCH)
                     {
@@ -588,7 +588,7 @@ namespace TCServer.Core.Services
                         
                         var endTime = DateTime.Now;
                         var duration = (endTime - startTime).TotalSeconds;
-                        _logger.LogWarning($"操作ID: {operationId}, 类型: {operationName}, 尝试 {retryCount}/{MAX_RETRY_COUNT} 超时, 已运行: {duration:F2}秒, 错误: {ex.Message}, 堆栈: {ex.StackTrace}");
+                        //_logger.LogWarning($"操作ID: {operationId}, 类型: {operationName}, 尝试 {retryCount}/{MAX_RETRY_COUNT} 超时, 已运行: {duration:F2}秒, 错误: {ex.Message}, 堆栈: {ex.StackTrace}");
                     
                     if (_consecutiveFailures >= MAX_FAILURES_BEFORE_SWITCH)
                     {
@@ -641,7 +641,7 @@ namespace TCServer.Core.Services
             }
             finally
             {
-                _logger.LogInformation($"操作ID: {operationId}, 释放请求信号量");
+                //_logger.LogInformation($"操作ID: {operationId}, 释放请求信号量");
                 _requestSemaphore.Release();
             }
         }

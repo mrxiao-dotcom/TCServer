@@ -1,6 +1,7 @@
 using System;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
@@ -15,6 +16,8 @@ using System.Threading;
 using MySql.Data.MySqlClient;
 using System.Threading.Tasks;
 using System.Security.Authentication;
+using TCServer.BreakthroughAlert.Services;
+using TCServer.BreakthroughAlert.Services.Interfaces;
 
 namespace TCServer;
 
@@ -44,7 +47,18 @@ public partial class App : Application
                 .MinimumLevel.Information()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
                 .MinimumLevel.Override("System", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services", LogEventLevel.Warning)
                 .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.Get24hrTickerAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetExchangeInfoAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetKlinesAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllPricesAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllBookTickersAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllTickersAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllSymbolsAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllSymbolsInfoAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllSymbolsInfoAsync.GetExchangeInfoAsync", LogEventLevel.Warning)
+                .MinimumLevel.Override("TCServer.Core.Services.BinanceApiService.GetAllSymbolsInfoAsync.GetExchangeInfoAsync.AddSymbol", LogEventLevel.Warning)
                 .WriteTo.File("logs/app.log", 
                     rollingInterval: RollingInterval.Day,
                     outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception:j}")
@@ -70,16 +84,23 @@ public partial class App : Application
                         builder.AddDebug();
                     });
 
+                    // 注册 Serilog.ILogger
+                    services.AddSingleton<Serilog.ILogger>(logger);
+
+                    // 注册 HttpClient
+                    services.AddHttpClient();
+
                     // 注册基础服务
                     services.AddSingleton<ISystemConfigRepository, SystemConfigRepository>();
                     services.AddSingleton<IDailyRankingRepository, DailyRankingRepository>();
                     
                     // 注册BinanceApiService为单例
-                    services.AddSingleton<BinanceApiService>(sp =>
-                    {
-                        var logger = sp.GetRequiredService<ILogger<BinanceApiService>>();
-                        return new BinanceApiService(logger);
-                    });
+                    services.AddSingleton<BinanceApiService>();
+                    
+                    // 注册突破监控相关服务
+                    services.AddSingleton<IFileStorageService, FileStorageService>();
+                    services.AddSingleton<IAlertMessageService, AlertMessageService>();
+                    services.AddSingleton<IBreakthroughMonitor, BreakthroughMonitor>();
                     
                     // 注册其他服务
                     services.AddSingleton<IKlineRepository, KlineRepository>();
