@@ -17,6 +17,7 @@
             <Button x:Name="btnStop" Content="停止服务" Width="100" Height="30" Margin="5" Click="btnStop_Click" IsEnabled="False"/>
             <Button x:Name="btnSettings" Content="参数设置" Width="100" Height="30" Margin="5" Click="btnSettings_Click"/>
             <Button x:Name="btnRanking" Content="涨跌排名" Width="100" Height="30" Margin="5" Click="btnRanking_Click"/>
+            <Button x:Name="btnAccountManagement" Content="账户监管" Width="100" Height="30" Margin="5" Click="btnAccountManagement_Click"/>
         </StackPanel>
         
         <!-- 进度区域 -->

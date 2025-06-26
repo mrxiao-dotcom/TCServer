@@ -205,6 +205,176 @@
                 </Grid>
             </TabItem>
             
+            <!-- 账户推送设置标签页 -->
+            <TabItem Header="账户推送设置">
+                <ScrollViewer>
+                    <Grid Margin="10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        
+                        <!-- 推送开关 -->
+                        <GroupBox Grid.Row="0" Header="推送总开关" Margin="0,0,0,15">
+                            <Grid Margin="5">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                
+                                <CheckBox Grid.Row="0" x:Name="chkEnablePush" Content="启用账户权益定时推送" 
+                                          IsChecked="False" Margin="0,5"/>
+                                
+                                <TextBlock Grid.Row="1" 
+                                           Text="启用后，系统将根据下方设置的时间段定时推送账户权益信息到您的微信" 
+                                           TextWrapping="Wrap" Margin="0,5,0,0" Foreground="Gray"/>
+                            </Grid>
+                        </GroupBox>
+                        
+                        <!-- 虾推啥Token设置 -->
+                        <GroupBox Grid.Row="1" Header="虾推啥Token配置" Margin="0,0,0,15">
+                            <Grid Margin="5">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <TextBlock Grid.Row="0" Grid.ColumnSpan="2" 
+                                           Text="请访问 https://xtuis.cn/ 获取您的推送Token" 
+                                           TextWrapping="Wrap" Margin="0,0,0,5"/>
+                                
+                                <TextBox Grid.Row="1" Grid.Column="0" x:Name="txtPushToken" 
+                                         Height="25" Margin="0,0,5,0" VerticalContentAlignment="Center"
+                                         ToolTip="请输入您在虾推啥获取的Token"/>
+                                
+                                <Button Grid.Row="1" Grid.Column="1" Content="测试推送" 
+                                        x:Name="btnTestPush" Click="btnTestPush_Click" 
+                                        Width="80" Height="25"/>
+                                
+                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2" 
+                                           Text="测试推送：点击上方按钮将发送一条测试消息到您的微信" 
+                                           TextWrapping="Wrap" Margin="0,5,0,0" Foreground="Gray"/>
+                                
+                                <TextBlock Grid.Row="3" Grid.ColumnSpan="2" 
+                                           Text="💡 提示：虾推啥免费服务每日推送上限300条，每分钟10条" 
+                                           TextWrapping="Wrap" Margin="0,5,0,0" Foreground="Orange"/>
+                            </Grid>
+                        </GroupBox>
+                        
+                        <!-- 推送时间设置 -->
+                        <GroupBox Grid.Row="2" Header="推送时间设置" Margin="0,0,0,15">
+                            <Grid Margin="5">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                
+                                <TextBlock Grid.Row="0" 
+                                           Text="设置每天的推送时间段和频率（10分钟间隔选择）" 
+                                           TextWrapping="Wrap" Margin="0,0,0,10"/>
+                                
+                                <!-- 时间段1：早间8-12点 -->
+                                <GroupBox Grid.Row="1" Header="早间时段 (08:00-11:59)" Margin="0,0,0,10">
+                                    <Grid Margin="5">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        
+                                        <CheckBox Grid.Row="0" x:Name="chkMorningEnabled" Content="启用早间推送" 
+                                                  IsChecked="False" Margin="0,0,0,5"/>
+                                        
+                                        <WrapPanel Grid.Row="1" x:Name="wpMorningMinutes">
+                                            <CheckBox Content="00分" x:Name="chkMorning00" Margin="5,2"/>
+                                            <CheckBox Content="10分" x:Name="chkMorning10" Margin="5,2"/>
+                                            <CheckBox Content="20分" x:Name="chkMorning20" Margin="5,2"/>
+                                            <CheckBox Content="30分" x:Name="chkMorning30" Margin="5,2"/>
+                                            <CheckBox Content="40分" x:Name="chkMorning40" Margin="5,2"/>
+                                            <CheckBox Content="50分" x:Name="chkMorning50" Margin="5,2"/>
+                                        </WrapPanel>
+                                    </Grid>
+                                </GroupBox>
+                                
+                                <!-- 时间段2：下午13-17点 -->
+                                <GroupBox Grid.Row="2" Header="下午时段 (13:00-16:59)" Margin="0,0,0,10">
+                                    <Grid Margin="5">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        
+                                        <CheckBox Grid.Row="0" x:Name="chkAfternoonEnabled" Content="启用下午推送" 
+                                                  IsChecked="False" Margin="0,0,0,5"/>
+                                        
+                                        <WrapPanel Grid.Row="1" x:Name="wpAfternoonMinutes">
+                                            <CheckBox Content="00分" x:Name="chkAfternoon00" Margin="5,2"/>
+                                            <CheckBox Content="10分" x:Name="chkAfternoon10" Margin="5,2"/>
+                                            <CheckBox Content="20分" x:Name="chkAfternoon20" Margin="5,2"/>
+                                            <CheckBox Content="30分" x:Name="chkAfternoon30" Margin="5,2"/>
+                                            <CheckBox Content="40分" x:Name="chkAfternoon40" Margin="5,2"/>
+                                            <CheckBox Content="50分" x:Name="chkAfternoon50" Margin="5,2"/>
+                                        </WrapPanel>
+                                    </Grid>
+                                </GroupBox>
+                                
+                                <!-- 时间段3：晚间19-22点 -->
+                                <GroupBox Grid.Row="3" Header="晚间时段 (19:00-21:59)" Margin="0,0,0,10">
+                                    <Grid Margin="5">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        
+                                        <CheckBox Grid.Row="0" x:Name="chkEveningEnabled" Content="启用晚间推送" 
+                                                  IsChecked="False" Margin="0,0,0,5"/>
+                                        
+                                        <WrapPanel Grid.Row="1" x:Name="wpEveningMinutes">
+                                            <CheckBox Content="00分" x:Name="chkEvening00" Margin="5,2"/>
+                                            <CheckBox Content="10分" x:Name="chkEvening10" Margin="5,2"/>
+                                            <CheckBox Content="20分" x:Name="chkEvening20" Margin="5,2"/>
+                                            <CheckBox Content="30分" x:Name="chkEvening30" Margin="5,2"/>
+                                            <CheckBox Content="40分" x:Name="chkEvening40" Margin="5,2"/>
+                                            <CheckBox Content="50分" x:Name="chkEvening50" Margin="5,2"/>
+                                        </WrapPanel>
+                                    </Grid>
+                                </GroupBox>
+                            </Grid>
+                        </GroupBox>
+                        
+                        <!-- 推送预览 -->
+                        <GroupBox Grid.Row="3" Header="推送消息预览">
+                            <Grid Margin="5">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,5">
+                                    <Button Content="预览推送消息" x:Name="btnPreviewPush" Click="btnPreviewPush_Click" 
+                                            Width="120" Height="25" Margin="0,0,10,0"/>
+                                    <TextBlock Text="预览推送到微信的消息格式" VerticalAlignment="Center" Foreground="Gray"/>
+                                </StackPanel>
+                                
+                                <TextBox Grid.Row="1" x:Name="txtPushPreview" IsReadOnly="True" 
+                                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" 
+                                         FontFamily="Microsoft YaHei" FontSize="12" MinHeight="100"
+                                         Background="#F5F5F5"/>
+                            </Grid>
+                        </GroupBox>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+            
             <!-- 其他设置标签页 -->
             <TabItem Header="其他设置">
                 <TextBlock Text="其他设置将在未来版本添加" Margin="10" Foreground="Gray"/>

@@ -7,6 +7,7 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>favicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,6 +27,10 @@
     <ProjectReference Include="..\TCServer.Core\TCServer.Core.csproj" />
     <ProjectReference Include="..\TCServer.Data\TCServer.Data.csproj" />
     <ProjectReference Include="..\TCServer.BreakthroughAlert\TCServer.BreakthroughAlert.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="favicon.ico" />
   </ItemGroup>
 
 </Project> 

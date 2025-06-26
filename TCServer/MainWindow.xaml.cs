@@ -33,9 +33,9 @@ public partial class MainWindow : Window
         _binanceApiService = _host.Services.GetRequiredService<BinanceApiService>();
         _logger = _host.Services.GetRequiredService<ILogger<MainWindow>>();
 
-        // 配置日志输出到文本框
+        // 配置专门的K线服务日志输出到文本框（只显示K线相关日志）
         var loggerFactory = _host.Services.GetRequiredService<ILoggerFactory>();
-        loggerFactory.AddProvider(new TextBoxLoggerProvider(txtLog));
+        loggerFactory.AddProvider(new KlineServiceLoggerProvider(txtLog));
         
         // 注册进度更新事件
         _klineService.ProgressUpdated += KlineService_ProgressUpdated;
@@ -223,6 +223,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private void btnAccountManagement_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var accountWindow = new AccountManagementWindow();
+            accountWindow.Show();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "打开账户监管窗口时发生错误");
+            MessageBox.Show($"打开账户监管窗口时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
     private async Task UpdateStatusAsync()
     {
         try
@@ -263,18 +277,18 @@ public partial class MainWindow : Window
     }
 }
 
-public class TextBoxLoggerProvider : ILoggerProvider
+public class KlineServiceLoggerProvider : ILoggerProvider
 {
     private readonly TextBox _textBox;
 
-    public TextBoxLoggerProvider(TextBox textBox)
+    public KlineServiceLoggerProvider(TextBox textBox)
     {
         _textBox = textBox;
     }
 
     public Microsoft.Extensions.Logging.ILogger CreateLogger(string categoryName)
     {
-        return new TextBoxLogger(_textBox);
+        return new KlineServiceLogger(_textBox, categoryName);
     }
 
     public void Dispose()
@@ -282,13 +296,15 @@ public class TextBoxLoggerProvider : ILoggerProvider
     }
 }
 
-public class TextBoxLogger : Microsoft.Extensions.Logging.ILogger
+public class KlineServiceLogger : Microsoft.Extensions.Logging.ILogger
 {
     private readonly TextBox _textBox;
+    private readonly string _categoryName;
 
-    public TextBoxLogger(TextBox textBox)
+    public KlineServiceLogger(TextBox textBox, string categoryName)
     {
         _textBox = textBox;
+        _categoryName = categoryName;
     }
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull
@@ -303,28 +319,69 @@ public class TextBoxLogger : Microsoft.Extensions.Logging.ILogger
 
     public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
     {
-        var message = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{logLevel}] {formatter(state, exception)}";
+        // 基于categoryName过滤日志，只显示K线服务相关的日志
+        // 过滤掉账户服务相关的日志
+        if (_categoryName.Contains("AccountDataService") || 
+            _categoryName.Contains("NotificationService") ||
+            _categoryName.Contains("AccountManagementWindow"))
+        {
+            return; // 不显示账户服务相关日志
+        }
+        
+        // 只显示以下服务的日志：
+        // - KlineService
+        // - BinanceApiService (但只显示K线相关的)
+        // - RankingService
+        // - MainWindow
+        var allowedCategories = new[]
+        {
+            "TCServer.Core.Services.KlineService",
+            "TCServer.Core.Services.RankingService", 
+            "TCServer.MainWindow",
+            "TCServer.SettingsWindow"
+        };
+        
+        var message = formatter(state, exception);
+        
+        // 对于BinanceApiService，只显示K线相关的消息
+        if (_categoryName.Contains("BinanceApiService"))
+        {
+            if (!message.Contains("K线") && 
+                !message.Contains("Kline") && 
+                !message.Contains("交易对") &&
+                !message.Contains("获取到") &&
+                !message.Contains("正在请求"))
+            {
+                return; // 过滤掉非K线相关的BinanceApi日志
+            }
+        }
+        else if (!allowedCategories.Any(cat => _categoryName.Contains(cat)))
+        {
+            return; // 不在允许列表中的日志不显示
+        }
+        
+        var logMessage = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{logLevel}] {message}";
         
         // 增强处理异常信息
         if (exception != null)
         {
-            message += Environment.NewLine + $"异常: {exception.Message}";
+            logMessage += Environment.NewLine + $"异常: {exception.Message}";
             
             // 特别处理MySQL异常
             if (exception is MySql.Data.MySqlClient.MySqlException mysqlEx)
             {
-                message += Environment.NewLine + $"MySQL错误码: {mysqlEx.Number}, SQL状态: {mysqlEx.SqlState}";
+                logMessage += Environment.NewLine + $"MySQL错误码: {mysqlEx.Number}, SQL状态: {mysqlEx.SqlState}";
             }
             
             // 记录内部异常
             if (exception.InnerException != null)
             {
-                message += Environment.NewLine + $"内部异常: {exception.InnerException.Message}";
+                logMessage += Environment.NewLine + $"内部异常: {exception.InnerException.Message}";
                 
                 // 特别处理内部MySQL异常
                 if (exception.InnerException is MySql.Data.MySqlClient.MySqlException innerMysqlEx)
                 {
-                    message += Environment.NewLine + $"MySQL内部错误码: {innerMysqlEx.Number}, SQL状态: {innerMysqlEx.SqlState}";
+                    logMessage += Environment.NewLine + $"MySQL内部错误码: {innerMysqlEx.Number}, SQL状态: {innerMysqlEx.SqlState}";
                 }
             }
             
@@ -333,14 +390,22 @@ public class TextBoxLogger : Microsoft.Extensions.Logging.ILogger
             {
                 var stackLines = exception.StackTrace.Split(new[] { Environment.NewLine }, StringSplitOptions.None);
                 var limitedStack = string.Join(Environment.NewLine, stackLines.Take(5));
-                message += Environment.NewLine + "堆栈跟踪:" + Environment.NewLine + limitedStack;
+                logMessage += Environment.NewLine + "堆栈跟踪:" + Environment.NewLine + limitedStack;
             }
         }
 
-        _textBox.Dispatcher.Invoke(() =>
+        try
         {
-            _textBox.AppendText(message + Environment.NewLine);
-            _textBox.ScrollToEnd();
-        });
+            _textBox.Dispatcher.Invoke(() =>
+            {
+                _textBox.AppendText(logMessage + Environment.NewLine);
+                _textBox.ScrollToEnd();
+            });
+        }
+        catch (Exception ex)
+        {
+            // 避免日志记录本身导致崩溃
+            System.Diagnostics.Debug.WriteLine($"日志记录异常: {ex.Message}");
+        }
     }
 } 

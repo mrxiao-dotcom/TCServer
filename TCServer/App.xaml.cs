@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using System.Security.Authentication;
 using TCServer.BreakthroughAlert.Services;
 using TCServer.BreakthroughAlert.Services.Interfaces;
+using TCServer.Data.Repositories;
 
 namespace TCServer;
 
@@ -93,6 +94,7 @@ public partial class App : Application
                     // 注册基础服务
                     services.AddSingleton<ISystemConfigRepository, SystemConfigRepository>();
                     services.AddSingleton<IDailyRankingRepository, DailyRankingRepository>();
+                    services.AddSingleton<IAccountRepository, AccountRepository>();
                     
                     // 注册BinanceApiService为单例
                     services.AddSingleton<BinanceApiService>();
@@ -107,6 +109,12 @@ public partial class App : Application
                     services.AddSingleton<KlineService>();
                     services.AddSingleton<RankingService>();
                     services.AddTransient<MainWindow>();
+                    
+                    // 注册账户数据服务
+                    services.AddTransient<AccountDataService>();
+                    
+                    // 注册推送服务
+                    services.AddSingleton<NotificationService>();
                 }
                 catch (Exception ex)
                 {

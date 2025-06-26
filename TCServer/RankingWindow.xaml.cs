@@ -17,7 +17,7 @@ using System.IO;
 using Newtonsoft.Json;
 using System.Net.Http;
 using System.Text;
-using TCServer.Models;
+
 using TCServer.BreakthroughAlert.Services.Interfaces;
 using TCServer.BreakthroughAlert.Models;
 
