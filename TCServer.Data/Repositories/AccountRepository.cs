@@ -417,38 +417,61 @@ namespace TCServer.Data.Repositories
                 using var transaction = await connection.BeginTransactionAsync();
                 try
                 {
-                    // 1. 先获取当前实时记录，准备保存到历史表
-                    const string selectCurrentSql = @"
-                        SELECT account_id, total_equity, available_balance, margin_balance, 
-                               unrealized_pnl, timestamp, created_at, updated_at 
-                        FROM account_balances 
-                        WHERE account_id = @AccountId";
+                    // 1. 获取当前持仓数据来计算Long/Short统计
+                    const string positionsSql = @"
+                        SELECT position_side AS PositionSide, position_amt AS PositionAmt, mark_price AS MarkPrice
+                        FROM account_positions 
+                        WHERE account_id = @AccountId AND ABS(position_amt) > 0";
                     
-                    var currentBalance = await connection.QueryFirstOrDefaultAsync<AccountBalance>(
-                        selectCurrentSql, new { AccountId = accountId }, transaction);
-
-                    // 2. 如果存在当前记录，保存到历史表
-                    if (currentBalance != null)
+                    var positions = await connection.QueryAsync(positionsSql, new { AccountId = accountId }, transaction);
+                    
+                    // 计算多空统计
+                    decimal longValue = 0m, shortValue = 0m;
+                    int longCount = 0, shortCount = 0;
+                    
+                    foreach (var pos in positions)
                     {
-                        const string insertHistorySql = @"
-                            INSERT INTO account_equity_history 
-                            (account_id, equity, available, position_value, leverage, long_value, short_value, long_count, short_count, create_time)
-                            VALUES (@AccountId, @Equity, @Available, @PositionValue, @Leverage, @LongValue, @ShortValue, @LongCount, @ShortCount, @CreateTime)";
+                        var positionValue = Math.Abs(Convert.ToDecimal(pos.PositionAmt)) * Convert.ToDecimal(pos.MarkPrice);
+                        var positionSide = pos.PositionSide?.ToString() ?? "";
                         
-                        await connection.ExecuteAsync(insertHistorySql, new
+                        if (positionSide == "LONG")
                         {
-                            AccountId = accountId.ToString(),
-                            Equity = currentBalance.TotalEquity,
-                            Available = currentBalance.AvailableBalance,
-                            PositionValue = currentBalance.MarginBalance - currentBalance.AvailableBalance,
-                            Leverage = 1m, // 默认杠杆
-                            LongValue = 0m, // 将在持仓数据中计算
-                            ShortValue = 0m, // 将在持仓数据中计算
-                            LongCount = 0, // 将在持仓数据中计算
-                            ShortCount = 0, // 将在持仓数据中计算
-                            CreateTime = currentBalance.Timestamp
-                        }, transaction);
+                            longValue += positionValue;
+                            longCount++;
+                        }
+                        else if (positionSide == "SHORT")
+                        {
+                            shortValue += positionValue;
+                            shortCount++;
+                        }
                     }
+                    
+                    // 获取平均杠杆
+                    const string leverageSql = @"
+                        SELECT AVG(leverage) as AvgLeverage FROM account_positions 
+                        WHERE account_id = @AccountId AND ABS(position_amt) > 0";
+                    
+                    var avgLeverage = await connection.QueryFirstOrDefaultAsync<decimal?>(leverageSql, new { AccountId = accountId }, transaction);
+                    
+                    // 2. 保存新的余额数据到历史表（每次都保存，使用新数据）
+                    const string insertHistorySql = @"
+                        INSERT INTO account_equity_history 
+                        (account_id, equity, available, position_value, leverage, long_value, short_value, long_count, short_count, create_time)
+                        VALUES (@AccountId, @Equity, @Available, @PositionValue, @Leverage, @LongValue, @ShortValue, @LongCount, @ShortCount, @CreateTime)";
+                    
+                    await connection.ExecuteAsync(insertHistorySql, new
+                    {
+                        AccountId = accountId.ToString(),
+                        Equity = newBalance.TotalEquity,  // 使用新数据！
+                        Available = newBalance.AvailableBalance,  // 使用新数据！
+                        PositionValue = newBalance.MarginBalance - newBalance.AvailableBalance,  // 使用新数据！
+                        Leverage = avgLeverage ?? 1m,
+                        LongValue = longValue,
+                        ShortValue = shortValue,
+                        LongCount = longCount,
+                        ShortCount = shortCount,
+                        CreateTime = newBalance.Timestamp  // 使用新数据的时间！
+                    }, transaction);
 
                     // 3. 删除当前记录
                     const string deleteSql = "DELETE FROM account_balances WHERE account_id = @AccountId";

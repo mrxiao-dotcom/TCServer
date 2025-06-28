@@ -26,6 +26,10 @@ namespace TCServer.Core.Services
         private bool _disposed = false;
         private readonly string _settingsFilePath = "settings.json";
         private DateTime _lastPushTime = DateTime.MinValue; // 添加上次推送时间记录
+        
+        // 全局推送锁，防止多实例或多线程同时推送
+        private static readonly object _pushLock = new object();
+        private static DateTime _globalLastPushTime = DateTime.MinValue;
 
         public AccountDataService(
             BinanceApiService binanceApiService, 
@@ -89,6 +93,13 @@ namespace TCServer.Core.Services
                 if (success)
                 {
                     _logger.LogInformation("✅ 手动推送完成");
+                    
+                    // 手动推送成功后也更新全局推送时间，防止立即的定时推送
+                    lock (_pushLock)
+                    {
+                        _globalLastPushTime = DateTime.Now;
+                        _lastPushTime = DateTime.Now;
+                    }
                 }
                 else
                 {
@@ -321,7 +332,7 @@ namespace TCServer.Core.Services
                         {
                             AccountId = account.AcctId,
                             Symbol = p.Symbol,
-                            PositionSide = p.PositionSide == "LONG" ? "LONG" : "SHORT",
+                            PositionSide = GetActualPositionSide(p.PositionSide, p.PositionAmt),
                             EntryPrice = p.EntryPrice,
                             MarkPrice = p.MarkPrice,
                             PositionAmt = Math.Abs(p.PositionAmt), // 取绝对值
@@ -338,7 +349,8 @@ namespace TCServer.Core.Services
                     // 记录详细的持仓信息
                     foreach (var pos in validPositions)
                     {
-                        _logger.LogDebug($"    持仓: {pos.Symbol}, 方向: {pos.PositionSide}, 数量: {pos.PositionAmt}, 盈亏: {pos.UnRealizedProfit:F4} USDT");
+                        var actualSide = GetActualPositionSide(pos.PositionSide, pos.PositionAmt);
+                        _logger.LogDebug($"    持仓: {pos.Symbol}, API方向: {pos.PositionSide}, 实际方向: {actualSide}, 数量: {pos.PositionAmt}, 盈亏: {pos.UnRealizedProfit:F4} USDT");
                     }
                     
                     try
@@ -374,6 +386,42 @@ namespace TCServer.Core.Services
                 _logger.LogError(ex, $"💥 查询账户 {accountName} 数据时发生错误: {ex.Message}");
                 _logger.LogError($"错误详情: {ex.StackTrace}");
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// 根据币安API返回的持仓方向和持仓数量，判断实际的持仓方向
+        /// </summary>
+        /// <param name="apiPositionSide">API返回的持仓方向</param>
+        /// <param name="positionAmt">持仓数量</param>
+        /// <returns>实际持仓方向：LONG 或 SHORT</returns>
+        private string GetActualPositionSide(string apiPositionSide, decimal positionAmt)
+        {
+            // 如果API明确返回LONG或SHORT，直接使用
+            if (apiPositionSide == "LONG")
+            {
+                return "LONG";
+            }
+            
+            if (apiPositionSide == "SHORT")
+            {
+                return "SHORT";
+            }
+            
+            // 如果是BOTH（双向持仓模式）或其他值，根据持仓数量判断
+            // 正数表示多头持仓，负数表示空头持仓
+            if (positionAmt > 0)
+            {
+                return "LONG";
+            }
+            else if (positionAmt < 0)
+            {
+                return "SHORT";
+            }
+            else
+            {
+                // 如果持仓数量为0，默认返回LONG（理论上不应该出现，因为已经过滤了0持仓）
+                return "LONG";
             }
         }
 
@@ -440,6 +488,8 @@ namespace TCServer.Core.Services
 
                 // 详细记录每个时间段的检查情况
                 bool shouldPush = false;
+                var matchedSlots = new List<string>();
+                
                 foreach (var slot in settings.PushTimeSlots)
                 {
                     var inTimeRange = now.Hour >= slot.StartHour && now.Hour <= slot.EndHour;
@@ -453,19 +503,38 @@ namespace TCServer.Core.Services
                     if (slot.IsEnabled && inTimeRange && inMinuteRange)
                     {
                         shouldPush = true;
-                        _logger.LogInformation($"✅ 匹配到推送时间段: {slot.StartHour:D2}:XX-{slot.EndHour:D2}:XX, 分钟: {now.Minute}");
-                        break;
+                        var slotInfo = $"{slot.StartHour:D2}:XX-{slot.EndHour:D2}:XX";
+                        matchedSlots.Add(slotInfo);
+                        _logger.LogInformation($"✅ 匹配到推送时间段: {slotInfo}, 分钟: {now.Minute}");
+                    }
+                }
+
+                // 记录所有匹配的时间段
+                if (matchedSlots.Count > 0)
+                {
+                    _logger.LogInformation($"📅 共匹配到 {matchedSlots.Count} 个时间段: {string.Join(", ", matchedSlots)}");
+                    if (matchedSlots.Count > 1)
+                    {
+                        _logger.LogWarning($"⚠️ 检测到时间段重叠！匹配的时间段: {string.Join(", ", matchedSlots)}");
                     }
                 }
 
                 if (shouldPush)
                 {
-                    // 防重复推送：检查距离上次推送是否超过1分钟
-                    var timeSinceLastPush = now - _lastPushTime;
-                    if (timeSinceLastPush.TotalMinutes < 1)
+                    // 使用全局锁确保推送操作的原子性
+                    lock (_pushLock)
                     {
-                        _logger.LogDebug($"⏰ 距离上次推送时间过短({timeSinceLastPush.TotalSeconds:F0}秒)，跳过推送");
-                        return;
+                        // 双重检查：防重复推送
+                        var timeSinceLastPush = now - _globalLastPushTime;
+                        if (timeSinceLastPush.TotalMinutes < 1)
+                        {
+                            _logger.LogInformation($"🔒 全局防重复：距离上次推送时间过短({timeSinceLastPush.TotalSeconds:F0}秒)，跳过推送");
+                            return;
+                        }
+
+                        // 立即更新全局推送时间，防止并发推送
+                        _globalLastPushTime = now;
+                        _lastPushTime = now;
                     }
 
                     _logger.LogInformation("🔔 推送时间到达，开始推送账户余额信息");
@@ -498,12 +567,18 @@ namespace TCServer.Core.Services
                         
                     if (success)
                     {
-                        _lastPushTime = now; // 记录推送时间
-                        _logger.LogInformation("✅ 账户余额推送完成");
+                        _logger.LogInformation($"✅ 账户余额推送完成 - 推送时间: {now:HH:mm:ss}");
                     }
                     else
                     {
                         _logger.LogWarning("❌ 账户余额推送失败");
+                        
+                        // 推送失败时重置时间，允许稍后重试
+                        lock (_pushLock)
+                        {
+                            _globalLastPushTime = DateTime.MinValue;
+                            _lastPushTime = DateTime.MinValue;
+                        }
                     }
                 }
                 else

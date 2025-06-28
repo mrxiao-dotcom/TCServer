@@ -10,6 +10,8 @@ using TCServer.Common.Models;
 using TCServer.Common.Interfaces;
 using TCServer.Core.Services;
 using System.Threading;
+using System.Windows.Media;
+using System.Windows.Shapes;
 
 namespace TCServer
 {
@@ -22,6 +24,10 @@ namespace TCServer
         private Timer? _uiRefreshTimer;
         private List<AccountBalance> _accountBalances = new();
         private bool _isDisposed = false;
+        
+        // 图表相关字段
+        private AccountInfo? _selectedAccountForChart;
+        private List<AccountEquityHistory> _equityHistory = new();
 
         public AccountManagementWindow()
         {
@@ -297,10 +303,15 @@ namespace TCServer
             if (selectedAccount != null)
             {
                 await LoadAccountPositions(selectedAccount);
+                
+                // 更新图表选择的账户并加载净值走势
+                _selectedAccountForChart = selectedAccount;
+                await LoadAndDisplayChart(selectedAccount);
             }
             else
             {
                 ClearPositionDisplay();
+                ClearChart();
             }
         }
 
@@ -317,6 +328,10 @@ namespace TCServer
                     
                     // 同步选择账户列表中对应的账户
                     dgAccounts.SelectedItem = account;
+                    
+                    // 更新图表选择的账户并加载净值走势
+                    _selectedAccountForChart = account;
+                    await LoadAndDisplayChart(account);
                 }
             }
         }
@@ -543,5 +558,325 @@ namespace TCServer
                 }
             }
         }
+
+        #region 图表相关方法
+
+        /// <summary>
+        /// 时间范围选择变化事件
+        /// </summary>
+        private async void cmbTimeRange_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_selectedAccountForChart != null)
+            {
+                await LoadAndDisplayChart(_selectedAccountForChart);
+            }
+        }
+
+        /// <summary>
+        /// 刷新图表按钮点击事件
+        /// </summary>
+        private async void btnRefreshChart_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectedAccountForChart != null)
+            {
+                await LoadAndDisplayChart(_selectedAccountForChart);
+                LogMessage($"已刷新 {_selectedAccountForChart.AcctName} 的净值走势图");
+            }
+            else
+            {
+                LogMessage("请先选择一个账户以查看净值走势");
+            }
+        }
+
+        /// <summary>
+        /// 加载并显示账户净值走势图
+        /// </summary>
+        private async Task LoadAndDisplayChart(AccountInfo account)
+        {
+            try
+            {
+                // 获取时间范围
+                var days = GetSelectedDays();
+                var endDate = DateTime.Now;
+                var startDate = endDate.AddDays(-days);
+
+                LogMessage($"正在加载 {account.AcctName} 近{days}天的净值数据...");
+                
+                // 从数据库获取权益历史数据
+                _equityHistory = await _accountRepository.GetAccountEquityHistoryAsync(
+                    account.AcctId.ToString(), startDate, endDate);
+
+                if (_equityHistory == null || _equityHistory.Count == 0)
+                {
+                    LogMessage($"暂无 {account.AcctName} 的历史净值数据");
+                    ClearChart();
+                    return;
+                }
+
+                // 按时间排序
+                _equityHistory = _equityHistory.OrderBy(h => h.CreateTime).ToList();
+                
+                LogMessage($"已加载 {account.AcctName} {_equityHistory.Count} 条净值记录");
+                
+                // 绘制图表
+                DrawEquityChart();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "加载净值走势图时发生错误");
+                LogMessage($"加载净值走势图时发生错误: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 获取选择的天数
+        /// </summary>
+        private int GetSelectedDays()
+        {
+            return cmbTimeRange.SelectedIndex switch
+            {
+                1 => 15,
+                2 => 30,
+                _ => 7
+            };
+        }
+
+        /// <summary>
+        /// 绘制权益走势图
+        /// </summary>
+        private void DrawEquityChart()
+        {
+            if (_equityHistory == null || _equityHistory.Count == 0)
+            {
+                ClearChart();
+                return;
+            }
+
+            try
+            {
+                // 清空画布
+                chartCanvas.Children.Clear();
+
+                // 获取画布尺寸
+                var canvasWidth = chartCanvas.ActualWidth;
+                var canvasHeight = chartCanvas.ActualHeight;
+                
+                if (canvasWidth <= 0 || canvasHeight <= 0)
+                {
+                    // 如果画布尺寸还没有确定，延迟绘制
+                    chartCanvas.SizeChanged += (s, e) => DrawEquityChart();
+                    return;
+                }
+
+                // 计算边距
+                var marginLeft = 60;
+                var marginRight = 20;
+                var marginTop = 20;
+                var marginBottom = 40;
+                
+                var chartWidth = canvasWidth - marginLeft - marginRight;
+                var chartHeight = canvasHeight - marginTop - marginBottom;
+
+                if (chartWidth <= 0 || chartHeight <= 0) return;
+
+                // 获取数据范围
+                var minEquity = _equityHistory.Min(h => h.Equity);
+                var maxEquity = _equityHistory.Max(h => h.Equity);
+                var equityRange = maxEquity - minEquity;
+                
+                if (equityRange == 0) equityRange = maxEquity * 0.1m; // 避免除以0
+
+                // 绘制背景网格
+                DrawGrid(marginLeft, marginTop, chartWidth, chartHeight);
+
+                // 绘制Y轴标签
+                DrawYAxisLabels(marginLeft, marginTop, chartHeight, minEquity, maxEquity);
+
+                // 绘制X轴标签
+                DrawXAxisLabels(marginLeft, marginTop + chartHeight, chartWidth);
+
+                // 绘制数据线
+                DrawDataLine(marginLeft, marginTop, chartWidth, chartHeight, minEquity, equityRange);
+                
+                LogMessage($"净值走势图绘制完成，数据点: {_equityHistory.Count}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "绘制净值走势图时发生错误");
+                LogMessage($"绘制净值走势图时发生错误: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 绘制背景网格
+        /// </summary>
+        private void DrawGrid(double marginLeft, double marginTop, double chartWidth, double chartHeight)
+        {
+            var gridBrush = new SolidColorBrush(Color.FromRgb(230, 230, 230));
+            
+            // 绘制水平网格线
+            for (int i = 0; i <= 5; i++)
+            {
+                var y = marginTop + (chartHeight / 5) * i;
+                var line = new Line
+                {
+                    X1 = marginLeft,
+                    Y1 = y,
+                    X2 = marginLeft + chartWidth,
+                    Y2 = y,
+                    Stroke = gridBrush,
+                    StrokeThickness = 1
+                };
+                chartCanvas.Children.Add(line);
+            }
+
+            // 绘制垂直网格线
+            for (int i = 0; i <= 6; i++)
+            {
+                var x = marginLeft + (chartWidth / 6) * i;
+                var line = new Line
+                {
+                    X1 = x,
+                    Y1 = marginTop,
+                    X2 = x,
+                    Y2 = marginTop + chartHeight,
+                    Stroke = gridBrush,
+                    StrokeThickness = 1
+                };
+                chartCanvas.Children.Add(line);
+            }
+        }
+
+        /// <summary>
+        /// 绘制Y轴标签
+        /// </summary>
+        private void DrawYAxisLabels(double marginLeft, double marginTop, double chartHeight, decimal minEquity, decimal maxEquity)
+        {
+            for (int i = 0; i <= 5; i++)
+            {
+                var y = marginTop + (chartHeight / 5) * (5 - i);
+                var value = minEquity + (maxEquity - minEquity) * i / 5;
+                
+                var textBlock = new TextBlock
+                {
+                    Text = $"{value:F0}",
+                    FontSize = 10,
+                    Foreground = Brushes.Black,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                
+                Canvas.SetLeft(textBlock, marginLeft - 50);
+                Canvas.SetTop(textBlock, y - 7);
+                chartCanvas.Children.Add(textBlock);
+            }
+        }
+
+        /// <summary>
+        /// 绘制X轴标签
+        /// </summary>
+        private void DrawXAxisLabels(double marginLeft, double baselineY, double chartWidth)
+        {
+            if (_equityHistory.Count == 0) return;
+            
+            var startTime = _equityHistory.First().CreateTime;
+            var endTime = _equityHistory.Last().CreateTime;
+            var timeSpan = endTime - startTime;
+            
+            for (int i = 0; i <= 6; i++)
+            {
+                var x = marginLeft + (chartWidth / 6) * i;
+                var time = startTime.AddTicks(timeSpan.Ticks * i / 6);
+                
+                var textBlock = new TextBlock
+                {
+                    Text = time.ToString("MM/dd"),
+                    FontSize = 10,
+                    Foreground = Brushes.Black,
+                    HorizontalAlignment = HorizontalAlignment.Center
+                };
+                
+                Canvas.SetLeft(textBlock, x - 15);
+                Canvas.SetTop(textBlock, baselineY + 5);
+                chartCanvas.Children.Add(textBlock);
+            }
+        }
+
+        /// <summary>
+        /// 绘制数据线
+        /// </summary>
+        private void DrawDataLine(double marginLeft, double marginTop, double chartWidth, double chartHeight, decimal minEquity, decimal equityRange)
+        {
+            if (_equityHistory.Count < 2) return;
+
+            var polyline = new Polyline
+            {
+                Stroke = new SolidColorBrush(Color.FromRgb(0, 123, 255)),
+                StrokeThickness = 2,
+                Fill = null
+            };
+
+            var startTime = _equityHistory.First().CreateTime;
+            var endTime = _equityHistory.Last().CreateTime;
+            var timeSpan = endTime - startTime;
+
+            foreach (var point in _equityHistory)
+            {
+                var timeRatio = timeSpan.TotalMinutes > 0 ? (point.CreateTime - startTime).TotalMinutes / timeSpan.TotalMinutes : 0;
+                var x = marginLeft + chartWidth * timeRatio;
+                
+                var equityRatio = equityRange > 0 ? (double)((point.Equity - minEquity) / equityRange) : 0.5;
+                var y = marginTop + chartHeight * (1 - equityRatio);
+                
+                polyline.Points.Add(new Point(x, y));
+            }
+
+            chartCanvas.Children.Add(polyline);
+
+            // 绘制数据点
+            foreach (var point in _equityHistory)
+            {
+                var timeRatio = timeSpan.TotalMinutes > 0 ? (point.CreateTime - startTime).TotalMinutes / timeSpan.TotalMinutes : 0;
+                var x = marginLeft + chartWidth * timeRatio;
+                
+                var equityRatio = equityRange > 0 ? (double)((point.Equity - minEquity) / equityRange) : 0.5;
+                var y = marginTop + chartHeight * (1 - equityRatio);
+                
+                var ellipse = new Ellipse
+                {
+                    Width = 4,
+                    Height = 4,
+                    Fill = new SolidColorBrush(Color.FromRgb(0, 123, 255))
+                };
+                
+                Canvas.SetLeft(ellipse, x - 2);
+                Canvas.SetTop(ellipse, y - 2);
+                chartCanvas.Children.Add(ellipse);
+            }
+        }
+
+        /// <summary>
+        /// 清空图表
+        /// </summary>
+        private void ClearChart()
+        {
+            chartCanvas.Children.Clear();
+            
+            // 显示无数据提示
+            var textBlock = new TextBlock
+            {
+                Text = "暂无数据",
+                FontSize = 14,
+                Foreground = Brushes.Gray,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            
+            Canvas.SetLeft(textBlock, (chartCanvas.ActualWidth - 60) / 2);
+            Canvas.SetTop(textBlock, (chartCanvas.ActualHeight - 20) / 2);
+            chartCanvas.Children.Add(textBlock);
+        }
+
+        #endregion
     }
 } 
