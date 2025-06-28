@@ -34,6 +34,11 @@ public partial class App : Application
     {
         try
         {
+            // 设置全局异常处理
+            DispatcherUnhandledException += App_DispatcherUnhandledException;
+            AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
+            TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
+            
             // 检查是否已经有实例在运行
             _mutex = new Mutex(true, "TCServer.SingleInstance", out bool createdNew);
             if (!createdNew)
@@ -110,11 +115,14 @@ public partial class App : Application
                     services.AddSingleton<RankingService>();
                     services.AddTransient<MainWindow>();
                     
-                    // 注册账户数据服务
-                    services.AddTransient<AccountDataService>();
+                    // 注册账户数据服务（单例模式，防止多个实例导致重复推送）
+                    services.AddSingleton<AccountDataService>();
                     
                     // 注册推送服务
                     services.AddSingleton<NotificationService>();
+                    
+                    // 注册服务协调器
+                    services.AddSingleton<ServiceCoordinator>();
                 }
                 catch (Exception ex)
                 {
@@ -375,6 +383,144 @@ public partial class App : Application
             _mutex?.ReleaseMutex();
             _mutex?.Dispose();
             base.OnExit(e);
+        }
+    }
+
+    // 全局异常处理方法
+    private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+    {
+        try
+        {
+            var errorMessage = $"未处理的UI线程异常:\n{e.Exception.Message}";
+            _logger?.LogError(e.Exception, "DispatcherUnhandledException: {Message}", e.Exception.Message);
+            
+            // 记录异常详情
+            LogExceptionDetails(e.Exception, "DispatcherUnhandledException");
+            
+            // 显示用户友好的错误消息
+            var result = MessageBox.Show(
+                $"程序遇到了意外错误，建议重启程序。\n\n错误信息：{e.Exception.Message}\n\n是否继续运行程序？\n(选择'否'将关闭程序)",
+                "程序错误",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Error);
+            
+            if (result == MessageBoxResult.No)
+            {
+                Shutdown(1);
+            }
+            else
+            {
+                e.Handled = true; // 继续运行
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"处理异常时发生错误：{ex.Message}", "严重错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+        }
+    }
+
+    private void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        try
+        {
+            var exception = e.ExceptionObject as Exception;
+            var errorMessage = exception?.Message ?? "未知错误";
+            
+            _logger?.LogError(exception, "UnhandledException: {Message}, IsTerminating: {IsTerminating}", 
+                errorMessage, e.IsTerminating);
+            
+            // 记录异常详情
+            LogExceptionDetails(exception, "UnhandledException");
+            
+            // 显示错误消息
+            MessageBox.Show(
+                $"程序遇到了严重错误，即将关闭。\n\n错误信息：{errorMessage}",
+                "程序严重错误",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                System.IO.File.WriteAllText($"crash_{DateTime.Now:yyyyMMdd_HHmmss}.log", 
+                    $"Critical error: {ex.Message}\nOriginal error: {e.ExceptionObject}");
+            }
+            catch { /* 忽略日志写入错误 */ }
+        }
+    }
+
+    private void TaskScheduler_UnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)
+    {
+        try
+        {
+            _logger?.LogError(e.Exception, "UnobservedTaskException: {Message}", e.Exception.Message);
+            
+            // 记录异常详情
+            LogExceptionDetails(e.Exception, "UnobservedTaskException");
+            
+            // 标记异常已被观察到，避免程序崩溃
+            e.SetObserved();
+            
+            // 在UI线程上显示警告
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                MessageBox.Show(
+                    $"检测到后台任务异常，已自动处理。\n\n错误信息：{e.Exception.GetBaseException().Message}",
+                    "后台任务异常",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }));
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                System.IO.File.WriteAllText($"task_error_{DateTime.Now:yyyyMMdd_HHmmss}.log", 
+                    $"Task exception handler error: {ex.Message}\nOriginal task error: {e.Exception}");
+            }
+            catch { /* 忽略日志写入错误 */ }
+        }
+    }
+
+    private void LogExceptionDetails(Exception? exception, string context)
+    {
+        if (exception == null) return;
+        
+        try
+        {
+            var details = new System.Text.StringBuilder();
+            details.AppendLine($"=== {context} 异常详情 ===");
+            details.AppendLine($"时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            details.AppendLine($"异常类型: {exception.GetType().FullName}");
+            details.AppendLine($"异常消息: {exception.Message}");
+            
+            if (exception.InnerException != null)
+            {
+                details.AppendLine($"内部异常: {exception.InnerException.GetType().FullName}");
+                details.AppendLine($"内部异常消息: {exception.InnerException.Message}");
+            }
+            
+            details.AppendLine("堆栈跟踪:");
+            details.AppendLine(exception.StackTrace ?? "无堆栈跟踪信息");
+            
+            // 如果是数据库相关异常，记录额外信息
+            if (exception is MySqlException mysqlEx)
+            {
+                details.AppendLine($"MySQL错误码: {mysqlEx.Number}");
+                details.AppendLine($"SQL状态: {mysqlEx.SqlState}");
+            }
+            
+            _logger?.LogError(details.ToString());
+            
+            // 写入紧急日志文件
+            var emergencyLogPath = $"emergency_{DateTime.Now:yyyyMMdd}.log";
+            System.IO.File.AppendAllText(emergencyLogPath, details.ToString() + Environment.NewLine);
+        }
+        catch
+        {
+            // 忽略日志记录错误，避免无限递归
         }
     }
 } 

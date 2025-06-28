@@ -22,7 +22,13 @@ public partial class MainWindow : Window
     private readonly IHost _host;
     private readonly KlineService _klineService;
     private readonly BinanceApiService _binanceApiService;
+    private readonly AccountDataService _accountDataService;
+    private readonly ServiceCoordinator _serviceCoordinator;
     private readonly ILogger<MainWindow> _logger;
+    
+    // 窗口实例引用，用于防止重复打开
+    private AccountManagementWindow? _accountManagementWindow;
+    private RankingWindow? _rankingWindow;
 
     public MainWindow(IHost host)
     {
@@ -31,6 +37,8 @@ public partial class MainWindow : Window
         _host = host;
         _klineService = _host.Services.GetRequiredService<KlineService>();
         _binanceApiService = _host.Services.GetRequiredService<BinanceApiService>();
+        _accountDataService = _host.Services.GetRequiredService<AccountDataService>();
+        _serviceCoordinator = _host.Services.GetRequiredService<ServiceCoordinator>();
         _logger = _host.Services.GetRequiredService<ILogger<MainWindow>>();
 
         // 配置专门的K线服务日志输出到文本框（只显示K线相关日志）
@@ -140,25 +148,38 @@ public partial class MainWindow : Window
             txtProgressBatch.Text = "0%";
             txtCurrentSymbol.Text = "正在启动服务...";
             
-            // 先启动BinanceApiService
-            await _binanceApiService.StartAsync();
+            // 使用服务协调器安全启动所有服务
+            var success = await _serviceCoordinator.StartAllServicesAsync();
             
-            // 然后启动KlineService
-            await _klineService.StartAsync();
+            if (success)
+            {
+                // 启用测试推送按钮
+                btnTestPush.IsEnabled = true;
+                txtCurrentSymbol.Text = "所有服务启动完成";
+            }
+            else
+            {
+                throw new InvalidOperationException("服务协调器启动失败");
+            }
+            
             await UpdateStatusAsync();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "启动服务时发生错误");
-            MessageBox.Show($"启动服务时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            _logger.LogError(ex, "启动服务时发生错误: {Message}", ex.Message);
             
-            // 发生错误时尝试停止服务
-            try
-            {
-                await _binanceApiService.StopAsync();
-                await _klineService.StopAsync();
-            }
-            catch { }
+            // 详细记录异常信息
+            var errorDetails = $"启动失败详情:\n" +
+                              $"异常类型: {ex.GetType().FullName}\n" +
+                              $"异常消息: {ex.Message}\n" +
+                              $"堆栈跟踪: {ex.StackTrace}";
+            _logger.LogError(errorDetails);
+            
+            MessageBox.Show($"启动服务时发生错误：{ex.Message}\n\n详细信息请查看日志文件。", "启动失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            
+            // 发生错误时尝试安全停止所有服务
+            txtCurrentSymbol.Text = "正在安全停止服务...";
+            await _serviceCoordinator.StopAllServicesAsync();
             
             btnStart.IsEnabled = true;
             btnStop.IsEnabled = false;
@@ -173,24 +194,27 @@ public partial class MainWindow : Window
             btnStop.IsEnabled = false;
             txtCurrentSymbol.Text = "正在停止服务...";
             
-            // 先停止KlineService
-            await _klineService.StopAsync();
+            // 使用服务协调器安全停止所有服务
+            await _serviceCoordinator.StopAllServicesAsync();
             
-            // 然后停止BinanceApiService
-            await _binanceApiService.StopAsync();
+            // 禁用测试推送按钮
+            btnTestPush.IsEnabled = false;
             
             btnStart.IsEnabled = true;
             txtCurrentSymbol.Text = "已停止";
+            _logger.LogInformation("=== 所有服务已停止 ===");
             await UpdateStatusAsync();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "停止服务时发生错误");
+            _logger.LogError(ex, "停止服务时发生错误: {Message}", ex.Message);
             MessageBox.Show($"停止服务时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             btnStart.IsEnabled = true;
             btnStop.IsEnabled = false;
         }
     }
+
+
 
     private async void btnSettings_Click(object sender, RoutedEventArgs e)
     {
@@ -213,13 +237,36 @@ public partial class MainWindow : Window
     {
         try
         {
-            var rankingWindow = new RankingWindow();
-            rankingWindow.Show();
+            // 检查窗口是否已存在且未关闭
+            if (_rankingWindow != null && _rankingWindow.IsLoaded)
+            {
+                // 激活现有窗口
+                _rankingWindow.Activate();
+                _rankingWindow.WindowState = WindowState.Normal;
+                _logger.LogInformation("排名窗口已存在，激活现有窗口");
+                return;
+            }
+
+            // 创建新窗口
+            _rankingWindow = new RankingWindow();
+            
+            // 监听窗口关闭事件，清理引用
+            _rankingWindow.Closed += (s, args) =>
+            {
+                _rankingWindow = null;
+                _logger.LogInformation("排名窗口已关闭，清理引用");
+            };
+            
+            _rankingWindow.Show();
+            _logger.LogInformation("排名窗口已打开");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "打开排名窗口时发生错误");
             MessageBox.Show($"打开排名窗口时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            
+            // 清理可能的无效引用
+            _rankingWindow = null;
         }
     }
 
@@ -227,13 +274,68 @@ public partial class MainWindow : Window
     {
         try
         {
-            var accountWindow = new AccountManagementWindow();
-            accountWindow.Show();
+            // 检查窗口是否已存在且未关闭
+            if (_accountManagementWindow != null && _accountManagementWindow.IsLoaded)
+            {
+                // 激活现有窗口
+                _accountManagementWindow.Activate();
+                _accountManagementWindow.WindowState = WindowState.Normal;
+                _logger.LogInformation("账户监管窗口已存在，激活现有窗口");
+                return;
+            }
+
+            // 创建新窗口
+            _accountManagementWindow = new AccountManagementWindow();
+            
+            // 监听窗口关闭事件，清理引用
+            _accountManagementWindow.Closed += (s, args) =>
+            {
+                _accountManagementWindow = null;
+                _logger.LogInformation("账户监管窗口已关闭，清理引用");
+            };
+            
+            _accountManagementWindow.Show();
+            _logger.LogInformation("账户监管窗口已打开");
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "打开账户监管窗口时发生错误");
             MessageBox.Show($"打开账户监管窗口时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            
+            // 清理可能的无效引用
+            _accountManagementWindow = null;
+        }
+    }
+
+    private async void btnTestPush_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            btnTestPush.IsEnabled = false;
+            txtCurrentSymbol.Text = "正在测试推送...";
+            
+            var success = await _accountDataService.TriggerManualPushAsync();
+            
+            if (success)
+            {
+                MessageBox.Show("测试推送已发送！请检查您的微信。", "推送成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                txtCurrentSymbol.Text = "测试推送完成";
+            }
+            else
+            {
+                MessageBox.Show("测试推送失败，请检查配置和日志。", "推送失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                txtCurrentSymbol.Text = "测试推送失败";
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "测试推送时发生错误");
+            MessageBox.Show($"测试推送时发生错误：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            txtCurrentSymbol.Text = "测试推送异常";
+        }
+        finally
+        {
+            btnTestPush.IsEnabled = true;
         }
     }
 

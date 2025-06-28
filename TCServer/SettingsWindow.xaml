@@ -283,15 +283,15 @@
                                            Text="设置每天的推送时间段和频率（10分钟间隔选择）" 
                                            TextWrapping="Wrap" Margin="0,0,0,10"/>
                                 
-                                <!-- 时间段1：早间8-12点 -->
-                                <GroupBox Grid.Row="1" Header="早间时段 (08:00-11:59)" Margin="0,0,0,10">
+                                <!-- 时间段1：全天时段 -->
+                                <GroupBox Grid.Row="1" Header="全天时段 (00:00-23:59)" Margin="0,0,0,10">
                                     <Grid Margin="5">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         
-                                        <CheckBox Grid.Row="0" x:Name="chkMorningEnabled" Content="启用早间推送" 
+                                        <CheckBox Grid.Row="0" x:Name="chkMorningEnabled" Content="启用全天推送" 
                                                   IsChecked="False" Margin="0,0,0,5"/>
                                         
                                         <WrapPanel Grid.Row="1" x:Name="wpMorningMinutes">
@@ -305,15 +305,15 @@
                                     </Grid>
                                 </GroupBox>
                                 
-                                <!-- 时间段2：下午13-17点 -->
-                                <GroupBox Grid.Row="2" Header="下午时段 (13:00-16:59)" Margin="0,0,0,10">
+                                <!-- 时间段2：白天工作时段 -->
+                                <GroupBox Grid.Row="2" Header="白天工作时段 (06:00-17:59)" Margin="0,0,0,10">
                                     <Grid Margin="5">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
                                         
-                                        <CheckBox Grid.Row="0" x:Name="chkAfternoonEnabled" Content="启用下午推送" 
+                                        <CheckBox Grid.Row="0" x:Name="chkAfternoonEnabled" Content="启用白天推送" 
                                                   IsChecked="False" Margin="0,0,0,5"/>
                                         
                                         <WrapPanel Grid.Row="1" x:Name="wpAfternoonMinutes">
@@ -327,8 +327,8 @@
                                     </Grid>
                                 </GroupBox>
                                 
-                                <!-- 时间段3：晚间19-22点 -->
-                                <GroupBox Grid.Row="3" Header="晚间时段 (19:00-21:59)" Margin="0,0,0,10">
+                                <!-- 时间段3：晚间时段 -->
+                                <GroupBox Grid.Row="3" Header="晚间时段 (18:00-23:59)" Margin="0,0,0,10">
                                     <Grid Margin="5">
                                         <Grid.RowDefinitions>
                                             <RowDefinition Height="Auto"/>

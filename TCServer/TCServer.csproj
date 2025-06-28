@@ -24,6 +24,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\TCServer.Common\TCServer.Common.csproj" />
     <ProjectReference Include="..\TCServer.Core\TCServer.Core.csproj" />
     <ProjectReference Include="..\TCServer.Data\TCServer.Data.csproj" />
     <ProjectReference Include="..\TCServer.BreakthroughAlert\TCServer.BreakthroughAlert.csproj" />

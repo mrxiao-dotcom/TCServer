@@ -477,8 +477,8 @@ public partial class SettingsWindow : Window
     /// </summary>
     private void LoadTimeSlotSettings()
     {
-        // 早间时段 (8-11)
-        var morningSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 8 && s.EndHour == 11);
+        // 全天时段 (0-23)
+        var morningSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 0 && s.EndHour == 23);
         if (morningSlot != null)
         {
             chkMorningEnabled.IsChecked = morningSlot.IsEnabled;
@@ -490,8 +490,8 @@ public partial class SettingsWindow : Window
             chkMorning50.IsChecked = morningSlot.PushMinutes.Contains(50);
         }
 
-        // 下午时段 (13-16)
-        var afternoonSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 13 && s.EndHour == 16);
+        // 白天工作时段 (6-17)
+        var afternoonSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 6 && s.EndHour == 17);
         if (afternoonSlot != null)
         {
             chkAfternoonEnabled.IsChecked = afternoonSlot.IsEnabled;
@@ -503,8 +503,8 @@ public partial class SettingsWindow : Window
             chkAfternoon50.IsChecked = afternoonSlot.PushMinutes.Contains(50);
         }
 
-        // 晚间时段 (19-21)
-        var eveningSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 19 && s.EndHour == 21);
+        // 晚间时段 (18-23)
+        var eveningSlot = NotificationSettings.PushTimeSlots.FirstOrDefault(s => s.StartHour == 18 && s.EndHour == 23);
         if (eveningSlot != null)
         {
             chkEveningEnabled.IsChecked = eveningSlot.IsEnabled;
@@ -535,8 +535,8 @@ public partial class SettingsWindow : Window
             {
                 var morningSlot = new PushTimeSlot
                 {
-                    StartHour = 8,
-                    EndHour = 11,
+                    StartHour = 0,  // 全天：0-23点
+                    EndHour = 23,
                     IsEnabled = true,
                     PushMinutes = new List<int>()
                 };
@@ -556,8 +556,8 @@ public partial class SettingsWindow : Window
             {
                 var afternoonSlot = new PushTimeSlot
                 {
-                    StartHour = 13,
-                    EndHour = 16,
+                    StartHour = 6,  // 白天工作时段：6-17点
+                    EndHour = 17,
                     IsEnabled = true,
                     PushMinutes = new List<int>()
                 };
@@ -577,8 +577,8 @@ public partial class SettingsWindow : Window
             {
                 var eveningSlot = new PushTimeSlot
                 {
-                    StartHour = 19,
-                    EndHour = 21,
+                    StartHour = 18,  // 晚间时段：18-23点
+                    EndHour = 23,
                     IsEnabled = true,
                     PushMinutes = new List<int>()
                 };

@@ -385,6 +385,220 @@ namespace TCServer.Core.Services
             }, "获取24小时行情数据");
         }
 
+        /// <summary>
+        /// 获取账户信息
+        /// </summary>
+        public async Task<AccountInfoDto?> GetAccountInfoAsync(string apiKey, string apiSecret)
+        {
+            return await ExecuteRequestAsync(async () =>
+            {
+                try
+                {
+                    _logger.LogDebug($"开始获取账户信息，API Key前8位: {apiKey.Substring(0, Math.Min(8, apiKey.Length))}...");
+                    
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    
+                    // 构建查询参数
+                    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var queryString = $"timestamp={timestamp}";
+                    
+                    // 生成签名
+                    var signature = GenerateSignature(queryString, apiSecret);
+                    queryString += $"&signature={signature}";
+                    
+                    // 构建请求URL
+                    var url = $"{GetCurrentBaseUrl()}/fapi/v2/account?{queryString}";
+                    _logger.LogDebug($"请求URL: {url}");
+                    
+                    // 创建请求
+                    var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.Add("X-MBX-APIKEY", apiKey);
+                    
+                    var response = await _httpClient.SendAsync(request, cts.Token);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    
+                    _logger.LogDebug($"API响应状态: {response.StatusCode}, 响应长度: {responseContent?.Length ?? 0}");
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogError($"获取账户信息失败: HTTP {(int)response.StatusCode}, 响应: {responseContent}");
+                        return null;
+                    }
+                    
+                    if (string.IsNullOrEmpty(responseContent))
+                    {
+                        _logger.LogWarning("获取到的账户信息为空");
+                        return null;
+                    }
+                    
+                    var accountInfo = JsonSerializer.Deserialize<AccountInfoDto>(responseContent);
+                    if (accountInfo != null)
+                    {
+                        _logger.LogDebug($"成功解析账户信息: 总权益={accountInfo.TotalWalletBalance}, 可用余额={accountInfo.AvailableBalance}");
+                    }
+                    return accountInfo;
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogError("获取账户信息超时");
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"获取账户信息时发生错误: {ex.Message}");
+                    return null;
+                }
+            }, "获取账户信息");
+        }
+
+        /// <summary>
+        /// 获取账户持仓信息
+        /// </summary>
+        public async Task<List<PositionInfoDto>> GetPositionInfoAsync(string apiKey, string apiSecret)
+        {
+            return await ExecuteRequestAsync(async () =>
+            {
+                try
+                {
+                    _logger.LogDebug($"开始获取持仓信息，API Key前8位: {apiKey.Substring(0, Math.Min(8, apiKey.Length))}...");
+                    
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    
+                    // 构建查询参数
+                    var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var queryString = $"timestamp={timestamp}";
+                    
+                    // 生成签名
+                    var signature = GenerateSignature(queryString, apiSecret);
+                    queryString += $"&signature={signature}";
+                    
+                    // 构建请求URL
+                    var url = $"{GetCurrentBaseUrl()}/fapi/v2/positionRisk?{queryString}";
+                    _logger.LogDebug($"请求URL: {url}");
+                    
+                    // 创建请求
+                    var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    request.Headers.Add("X-MBX-APIKEY", apiKey);
+                    
+                    var response = await _httpClient.SendAsync(request, cts.Token);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+                    
+                    _logger.LogDebug($"API响应状态: {response.StatusCode}, 响应长度: {responseContent?.Length ?? 0}");
+                    
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogError($"获取持仓信息失败: HTTP {(int)response.StatusCode}, 响应: {responseContent}");
+                        return new List<PositionInfoDto>();
+                    }
+                    
+                    if (string.IsNullOrEmpty(responseContent))
+                    {
+                        _logger.LogWarning("获取到的持仓信息为空");
+                        return new List<PositionInfoDto>();
+                    }
+                    
+                    var positions = JsonSerializer.Deserialize<List<PositionInfoDto>>(responseContent);
+                    if (positions != null)
+                    {
+                        var nonZeroPositions = positions.Where(p => p.PositionAmt != 0).ToList();
+                        _logger.LogDebug($"成功解析持仓信息: 总持仓={positions.Count}个, 非零持仓={nonZeroPositions.Count}个");
+                    }
+                    return positions ?? new List<PositionInfoDto>();
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogError("获取持仓信息超时");
+                    return new List<PositionInfoDto>();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"获取持仓信息时发生错误: {ex.Message}");
+                    return new List<PositionInfoDto>();
+                }
+            }, "获取持仓信息");
+        }
+
+        // 生成签名的重载方法
+        private string GenerateSignature(string queryString, string apiSecret)
+        {
+            using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(apiSecret));
+            var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(queryString));
+            return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        }
+
+        // 账户信息数据模型
+        public class AccountInfoDto
+        {
+            [JsonPropertyName("totalWalletBalance")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal TotalWalletBalance { get; set; }
+
+            [JsonPropertyName("totalUnrealizedProfit")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal TotalUnrealizedProfit { get; set; }
+
+            [JsonPropertyName("totalMarginBalance")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal TotalMarginBalance { get; set; }
+
+            [JsonPropertyName("totalPositionInitialMargin")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal TotalPositionInitialMargin { get; set; }
+
+            [JsonPropertyName("totalOpenOrderInitialMargin")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal TotalOpenOrderInitialMargin { get; set; }
+
+            [JsonPropertyName("availableBalance")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal AvailableBalance { get; set; }
+
+            [JsonPropertyName("maxWithdrawAmount")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal MaxWithdrawAmount { get; set; }
+        }
+
+        // 持仓信息数据模型
+        public class PositionInfoDto
+        {
+            [JsonPropertyName("symbol")]
+            public string Symbol { get; set; } = string.Empty;
+
+            [JsonPropertyName("positionAmt")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal PositionAmt { get; set; }
+
+            [JsonPropertyName("entryPrice")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal EntryPrice { get; set; }
+
+            [JsonPropertyName("markPrice")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal MarkPrice { get; set; }
+
+            [JsonPropertyName("unRealizedProfit")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal UnRealizedProfit { get; set; }
+
+            [JsonPropertyName("liquidationPrice")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal LiquidationPrice { get; set; }
+
+            [JsonPropertyName("leverage")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal Leverage { get; set; }
+
+            [JsonPropertyName("marginType")]
+            public string MarginType { get; set; } = string.Empty;
+
+            [JsonPropertyName("isolatedMargin")]
+            [JsonConverter(typeof(DecimalStringConverter))]
+            public decimal IsolatedMargin { get; set; }
+
+            [JsonPropertyName("positionSide")]
+            public string PositionSide { get; set; } = string.Empty;
+        }
+
         // 24小时行情数据模型
         public class TickerPriceDto
         {
